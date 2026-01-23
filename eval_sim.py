@@ -12,7 +12,7 @@ import dill
 import wandb
 import json
 import random
-from omegaconf import open_dict
+from omegaconf import open_dict, OmegaConf
 from unified_video_action.workspace.base_workspace import BaseWorkspace
 from unified_video_action.utils.load_env import load_env_runner
 
@@ -21,26 +21,64 @@ from unified_video_action.utils.load_env import load_env_runner
 @click.option("-c", "--checkpoint", required=True)
 @click.option("-o", "--output_dir", required=True)
 @click.option("-d", "--device", default="cuda:0")
-def main(checkpoint, output_dir, device):
+@click.option(
+    "--num_sampling_steps",
+    type=int,
+    default=None,
+    show_default=True,
+    help="Number of sampling steps to use."
+)
+@click.option(
+    "--cfg",
+    type=float,
+    default=None,
+    show_default=True,
+    help="Classifier-free guidance factor."
+)
+@click.option(
+    "--temperature",
+    type=float,
+    default=None,
+    show_default=True,
+    help="Temperature for sampling."
+)
+@click.option(
+    "--n_test",
+    type=int,
+    default=None,
+    show_default=True,
+    help="Override number of test rollouts per task."
+)
+def main(checkpoint, output_dir, device, num_sampling_steps, cfg, temperature, n_test):
 
     pathlib.Path(output_dir).mkdir(parents=True, exist_ok=True)
 
     # load checkpoint
     payload = torch.load(open(checkpoint, "rb"), pickle_module=dill)
-    cfg = payload["cfg"]
+    config = payload["cfg"]
+    
+    # Update parameters if provided
+    with open_dict(config.model.policy.autoregressive_model_params):
+        if num_sampling_steps is not None:
+            config.model.policy.autoregressive_model_params.num_sampling_steps = str(num_sampling_steps)
+            config.model.policy.autoregressive_model_params.act_diff_testing_steps = str(num_sampling_steps)
+        if cfg is not None:
+            config.model.policy.autoregressive_model_params.cfg = cfg
+        if temperature is not None:
+            config.model.policy.autoregressive_model_params.temperature = temperature
 
     # set seed
-    seed = cfg.training.seed
+    seed = config.training.seed
     torch.manual_seed(seed)
     np.random.seed(seed)
     random.seed(seed)
 
-    with open_dict(cfg):
-        cfg.output_dir = output_dir
+    with open_dict(config):
+        config.output_dir = output_dir
         
     # configure workspace
-    cls = hydra.utils.get_class(cfg.model._target_)
-    workspace = cls(cfg, output_dir=output_dir)
+    cls = hydra.utils.get_class(config.model._target_)
+    workspace = cls(config, output_dir=output_dir)
     workspace: BaseWorkspace
 
     print("Loaded checkpoint from %s" % checkpoint)
@@ -52,9 +90,17 @@ def main(checkpoint, output_dir, device):
     policy.to(device)
     policy.eval()
 
-    env_runners = load_env_runner(cfg, output_dir)
+    # Override n_test if provided
+    if n_test is not None:
+        with open_dict(config):
+            if "libero" in config.task.name:
+                config.task.env_runner.n_test = n_test
+            else:
+                config.task.env_runner.n_test = n_test
 
-    if "libero" in cfg.task.name:
+    env_runners = load_env_runner(config, output_dir)
+
+    if "libero" in config.task.name:
         step_log = {}
         for env_runner in env_runners:
             runner_log = env_runner.run(policy)
