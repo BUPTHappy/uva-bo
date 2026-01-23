@@ -29,7 +29,7 @@ class UVABayesianOptimizer:
         if self.optimization_mode == "speed_priority":
             # Fewer sampling steps for speed
             num_sampling_steps_options = [1, 2, 3]
-            temperature_range = (0.5, 1.0)  # Lower temperature for faster convergence
+            temperature_range = (0.5, 0.6)  # Lower temperature for faster convergence
             cfg_range = (0.5, 1.5)  # Narrower CFG range
             
         elif self.optimization_mode == "performance_priority":
