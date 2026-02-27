@@ -1,6 +1,7 @@
 import os
 import random
 import pathlib
+import sys
 import click
 import dill
 import hydra
@@ -10,6 +11,10 @@ import matplotlib.pyplot as plt
 
 from torch.utils.data import DataLoader
 from omegaconf import open_dict
+
+ROOT_DIR = pathlib.Path(__file__).resolve().parents[2]
+if str(ROOT_DIR) not in sys.path:
+    sys.path.insert(0, str(ROOT_DIR))
 
 from unified_video_action.workspace.base_workspace import BaseWorkspace
 from unified_video_action.common.pytorch_util import dict_apply
