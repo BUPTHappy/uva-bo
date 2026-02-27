@@ -29,6 +29,8 @@ class DiffActLoss(nn.Module):
 
         self.language_emb_model = kwargs["language_emb_model"]
         self.language_emb_model_type = kwargs["language_emb_model_type"]
+        self.capture_debug = kwargs.get("capture_debug", False)
+        self.debug_tensors = {}
 
         self.act_model_type = act_model_type
 
@@ -106,6 +108,10 @@ class DiffActLoss(nn.Module):
             timestep_respacing=act_diff_testing_steps, noise_schedule="cosine"
         )
 
+    def _maybe_store_debug(self, name, tensor):
+        if self.capture_debug:
+            self.debug_tensors[name] = tensor.detach().float().cpu()
+
     def forward(self, target, z, task_mode=None, text_latents=None):
         bsz, seq_len, _ = target.shape
 
@@ -122,6 +128,7 @@ class DiffActLoss(nn.Module):
             z = self.interpolate(z)
             z = z.permute(0, 2, 1)
             z = self.refine(z)
+            self._maybe_store_debug("z_refine", z)
             
         elif self.act_model_type == "conv_ori":
             z = rearrange(
@@ -136,10 +143,12 @@ class DiffActLoss(nn.Module):
             
         elif self.act_model_type == 'conv2':
             z = self.conv(z)
+            self._maybe_store_debug("z_refine", z)
         
         elif self.act_model_type == 'fc2':
             z = self.fc(z.transpose(1, 2))
             z = z.transpose(1, 2)
+            self._maybe_store_debug("z_refine", z)
             
         else:
             raise NotImplementedError
@@ -179,6 +188,7 @@ class DiffActLoss(nn.Module):
             z = self.interpolate(z)
             z = z.permute(0, 2, 1)
             z = self.refine(z)
+            self._maybe_store_debug("z_refine", z)
             
         elif self.act_model_type == "conv_ori":
             z = rearrange(
@@ -193,10 +203,12 @@ class DiffActLoss(nn.Module):
         
         elif self.act_model_type == 'conv2':
             z = self.conv(z)
+            self._maybe_store_debug("z_refine", z)
             
         elif self.act_model_type == 'fc2':
             z = self.fc(z.transpose(1, 2))
             z = z.transpose(1, 2)
+            self._maybe_store_debug("z_refine", z)
             
         else:
             raise NotImplementedError
