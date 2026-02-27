@@ -22,7 +22,9 @@ from unified_video_action.utils.data_utils import resize_image
 from unified_video_action.eval.eval import prepare_data_predict_action
 
 
-def _load_policy_and_cfg(ckpt_path, output_dir, device, act_diff_testing_steps):
+def _load_policy_and_cfg(
+    ckpt_path, output_dir, device, act_diff_testing_steps, dataset_path
+):
     payload = torch.load(open(ckpt_path, "rb"), map_location="cpu", pickle_module=dill)
     cfg = payload["cfg"]
 
@@ -36,6 +38,12 @@ def _load_policy_and_cfg(ckpt_path, output_dir, device, act_diff_testing_steps):
         cfg.model.policy.autoregressive_model_params.act_diff_testing_steps = str(
             act_diff_testing_steps
         )
+        if dataset_path is not None:
+            if hasattr(cfg.task, "dataset"):
+                if "dataset_path" in cfg.task.dataset:
+                    cfg.task.dataset.dataset_path = dataset_path
+                if "zarr_path" in cfg.task.dataset:
+                    cfg.task.dataset.zarr_path = dataset_path
 
     cls = hydra.utils.get_class(cfg.model._target_)
     workspace: BaseWorkspace = cls(cfg, output_dir=output_dir)
@@ -167,13 +175,26 @@ def _plot_hist(values, label, out_path, bins=120):
 @click.option("--device", default="cuda:0", type=str, show_default=True)
 @click.option("--max-batches", default=50, type=int, show_default=True)
 @click.option("--act-steps", default=2, type=int, show_default=True)
-def main(checkpoint, label, output_dir, device, max_batches, act_steps):
+@click.option(
+    "--dataset-path",
+    default="data/pusht/pusht_cchi_v7_replay.zarr",
+    type=str,
+    show_default=True,
+    help="Dataset path override for cfg.task.dataset.",
+)
+def main(checkpoint, label, output_dir, device, max_batches, act_steps, dataset_path):
     output_dir = os.path.abspath(output_dir)
     pathlib.Path(output_dir).mkdir(parents=True, exist_ok=True)
 
     print(f"[INFO] Collecting z_refine from checkpoint: {checkpoint}")
+    dataset_path = os.path.abspath(dataset_path)
+    print(f"[INFO] Using dataset path: {dataset_path}")
     cfg, policy = _load_policy_and_cfg(
-        checkpoint, output_dir, device, act_diff_testing_steps=act_steps
+        checkpoint,
+        output_dir,
+        device,
+        act_diff_testing_steps=act_steps,
+        dataset_path=dataset_path,
     )
     loader = _build_val_loader(cfg)
     values = _collect_z_refine(cfg, policy, loader, device, max_batches)
