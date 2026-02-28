@@ -74,7 +74,7 @@ def _build_val_loader(cfg):
 
 
 @torch.no_grad()
-def _collect_z_refine(cfg, policy, loader, device, max_batches):
+def _collect_values(cfg, policy, loader, device, max_batches, target):
     if not hasattr(policy.model, "diffactloss"):
         raise RuntimeError("Current checkpoint does not have action diffusion head (diffactloss).")
 
@@ -132,24 +132,30 @@ def _collect_z_refine(cfg, policy, loader, device, max_batches):
             task_mode="policy_model",
         )
 
-        z_refine = policy.model.diffactloss.debug_tensors.get("z_refine")
-        if z_refine is None:
-            raise RuntimeError("z_refine was not captured. Check act_model_type path and debug switch.")
-
-        all_vals.append(z_refine.reshape(-1).numpy())
+        if target == "z_refine":
+            z_refine = policy.model.diffactloss.debug_tensors.get("z_refine")
+            if z_refine is None:
+                raise RuntimeError("z_refine was not captured. Check act_model_type path and debug switch.")
+            all_vals.append(z_refine.reshape(-1).numpy())
+        elif target == "act_out":
+            if _act_out is None:
+                raise RuntimeError("act_out is None from sample_tokens(task_mode='policy_model').")
+            all_vals.append(_act_out.detach().float().cpu().reshape(-1).numpy())
+        else:
+            raise ValueError(f"Unsupported target: {target}")
 
     if len(all_vals) == 0:
-        raise RuntimeError("No z_refine collected. Try increasing --max_batches.")
+        raise RuntimeError(f"No values collected for target={target}. Try increasing --max_batches.")
 
     return np.concatenate(all_vals, axis=0)
 
 
-def _plot_hist(values, label, out_path, bins=120):
+def _plot_hist(values, label, out_path, target, bins=120):
     plt.figure(figsize=(8, 5))
     plt.hist(values, bins=bins, density=True, alpha=0.7, label=label)
-    plt.xlabel("z_refine value")
+    plt.xlabel(f"{target} value")
     plt.ylabel("density")
-    plt.title("z_refine distribution")
+    plt.title(f"{target} distribution")
     plt.legend()
     plt.tight_layout()
     plt.savefig(out_path, dpi=200)
@@ -176,17 +182,24 @@ def _plot_hist(values, label, out_path, bins=120):
 @click.option("--max-batches", default=50, type=int, show_default=True)
 @click.option("--act-steps", default=2, type=int, show_default=True)
 @click.option(
+    "--target",
+    default="z_refine",
+    type=click.Choice(["z_refine", "act_out"]),
+    show_default=True,
+    help="Which output to collect and plot.",
+)
+@click.option(
     "--dataset-path",
     default="data/pusht/pusht_cchi_v7_replay.zarr",
     type=str,
     show_default=True,
     help="Dataset path override for cfg.task.dataset.",
 )
-def main(checkpoint, label, output_dir, device, max_batches, act_steps, dataset_path):
+def main(checkpoint, label, output_dir, device, max_batches, act_steps, target, dataset_path):
     output_dir = os.path.abspath(output_dir)
     pathlib.Path(output_dir).mkdir(parents=True, exist_ok=True)
 
-    print(f"[INFO] Collecting z_refine from checkpoint: {checkpoint}")
+    print(f"[INFO] Collecting {target} from checkpoint: {checkpoint}")
     dataset_path = os.path.abspath(dataset_path)
     print(f"[INFO] Using dataset path: {dataset_path}")
     cfg, policy = _load_policy_and_cfg(
@@ -197,17 +210,18 @@ def main(checkpoint, label, output_dir, device, max_batches, act_steps, dataset_
         dataset_path=dataset_path,
     )
     loader = _build_val_loader(cfg)
-    values = _collect_z_refine(cfg, policy, loader, device, max_batches)
+    values = _collect_values(cfg, policy, loader, device, max_batches, target=target)
+    out_key = "z_refine" if target == "z_refine" else "act_out"
     np.savez_compressed(
-        os.path.join(output_dir, f"{label}_z_refine.npz"),
-        z_refine=values,
+        os.path.join(output_dir, f"{label}_{out_key}.npz"),
+        **{out_key: values},
         mean=values.mean(),
         std=values.std(),
     )
     print(f"[INFO] {label}: mean={values.mean():.6f}, std={values.std():.6f}")
 
-    fig_path = os.path.join(output_dir, "z_refine_hist.png")
-    _plot_hist(values, label, fig_path)
+    fig_path = os.path.join(output_dir, f"{target}_hist.png")
+    _plot_hist(values, label, fig_path, target=target)
     print(f"[INFO] Saved histogram: {fig_path}")
 
 
