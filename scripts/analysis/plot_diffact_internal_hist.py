@@ -268,7 +268,7 @@ def main(
     print(f"[INFO] Using dataset path: {dataset_path}")
 
     cfg, policy = _load_policy_and_cfg(
-        checkpoint=checkpoint,
+        ckpt_path=checkpoint,
         output_dir=output_dir,
         device=device,
         act_diff_testing_steps=act_steps,
