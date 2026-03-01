@@ -2,6 +2,7 @@ import os
 import random
 import pathlib
 import sys
+import types
 
 import click
 import dill
@@ -87,6 +88,102 @@ def _maybe_downsample(values, max_points):
     return values[idx]
 
 
+def _run_policy_sample_tokens(cfg, policy, loader, device, max_batches):
+    for n, batch in enumerate(loader):
+        if n >= max_batches:
+            break
+
+        batch = dict_apply(batch, lambda x: x.to(device, non_blocking=True))
+        actions = batch["action"]
+
+        if cfg.model.policy.use_history_action:
+            batch = dict_apply(batch, lambda x: x[:, 1:])
+
+        batch = resize_image(cfg, batch)
+        bsz, T, _, _, _ = batch["obs"]["image"].size()
+
+        if cfg.task.dataset.language_emb_model is not None:
+            if "language" in batch["obs"]:
+                language_goal = batch["obs"]["language"]
+                del batch["obs"]["language"]
+            elif "language_latents" in batch:
+                language_goal = batch["language_latents"]
+                del batch["language_latents"]
+            else:
+                raise NotImplementedError("Language model enabled but no language input found.")
+        else:
+            language_goal = None
+
+        (
+            _x,
+            _real,
+            _latent_size,
+            c,
+            text_latents,
+            history_trajectory,
+            trajectory,
+            proprioception_input,
+        ) = prepare_data_predict_action(
+            cfg, batch, actions, policy, T, device, language_goal=language_goal
+        )
+
+        policy.model.sample_tokens(
+            bsz=bsz,
+            cond=c,
+            text_latents=text_latents,
+            num_iter=cfg.model.policy.autoregressive_model_params.num_iter,
+            cfg=cfg.model.policy.autoregressive_model_params.cfg,
+            cfg_schedule=cfg.model.policy.autoregressive_model_params.cfg_schedule,
+            temperature=cfg.model.policy.autoregressive_model_params.temperature,
+            history_nactions=history_trajectory,
+            nactions=trajectory,
+            proprioception_input=proprioception_input,
+            task_mode="policy_model",
+        )
+
+
+@torch.no_grad()
+def _collect_noisy_xt_values(
+    cfg,
+    policy,
+    loader,
+    device,
+    max_batches,
+    capture_t,
+    max_points_per_call,
+):
+    if not hasattr(policy.model, "diffactloss"):
+        raise RuntimeError("Current checkpoint does not have action diffusion head (diffactloss).")
+
+    diffusion = policy.model.diffactloss.gen_diffusion
+    print(
+        f"[INFO] noisy_xt capture configured at t={capture_t}; diffusion num_timesteps={diffusion.num_timesteps}"
+    )
+
+    collected = []
+    original_unbound = diffusion.__class__.p_sample
+
+    def wrapped_p_sample(self, model, x, t, *args, **kwargs):
+        t_val = int(t[0].item())
+        if capture_t < 0 or t_val == capture_t:
+            values = x.detach().float().reshape(-1).cpu().numpy()
+            values = _maybe_downsample(values, max_points_per_call)
+            collected.append(values)
+        return original_unbound(self, model, x, t, *args, **kwargs)
+
+    diffusion.p_sample = types.MethodType(wrapped_p_sample, diffusion)
+    try:
+        _run_policy_sample_tokens(cfg, policy, loader, device, max_batches=max_batches)
+    finally:
+        diffusion.p_sample = types.MethodType(original_unbound, diffusion)
+
+    if len(collected) == 0:
+        raise RuntimeError(
+            f"No noisy_xt values collected at t={capture_t}. Use --capture-t -1 to collect all timesteps."
+        )
+    return np.concatenate(collected, axis=0)
+
+
 @torch.no_grad()
 def _collect_internal_values(
     cfg,
@@ -127,57 +224,7 @@ def _collect_internal_values(
 
     handle = target_block.register_forward_hook(hook_fn)
     try:
-        for n, batch in enumerate(loader):
-            if n >= max_batches:
-                break
-
-            batch = dict_apply(batch, lambda x: x.to(device, non_blocking=True))
-            actions = batch["action"]
-
-            if cfg.model.policy.use_history_action:
-                batch = dict_apply(batch, lambda x: x[:, 1:])
-
-            batch = resize_image(cfg, batch)
-            bsz, T, _, _, _ = batch["obs"]["image"].size()
-
-            if cfg.task.dataset.language_emb_model is not None:
-                if "language" in batch["obs"]:
-                    language_goal = batch["obs"]["language"]
-                    del batch["obs"]["language"]
-                elif "language_latents" in batch:
-                    language_goal = batch["language_latents"]
-                    del batch["language_latents"]
-                else:
-                    raise NotImplementedError("Language model enabled but no language input found.")
-            else:
-                language_goal = None
-
-            (
-                _x,
-                _real,
-                _latent_size,
-                c,
-                text_latents,
-                history_trajectory,
-                trajectory,
-                proprioception_input,
-            ) = prepare_data_predict_action(
-                cfg, batch, actions, policy, T, device, language_goal=language_goal
-            )
-
-            policy.model.sample_tokens(
-                bsz=bsz,
-                cond=c,
-                text_latents=text_latents,
-                num_iter=cfg.model.policy.autoregressive_model_params.num_iter,
-                cfg=cfg.model.policy.autoregressive_model_params.cfg,
-                cfg_schedule=cfg.model.policy.autoregressive_model_params.cfg_schedule,
-                temperature=cfg.model.policy.autoregressive_model_params.temperature,
-                history_nactions=history_trajectory,
-                nactions=trajectory,
-                proprioception_input=proprioception_input,
-                task_mode="policy_model",
-            )
+        _run_policy_sample_tokens(cfg, policy, loader, device, max_batches=max_batches)
     finally:
         handle.remove()
 
@@ -221,7 +268,7 @@ def _plot_hist(values, label, out_path, target, bins=120):
 @click.option(
     "--target",
     default="gate_mlp",
-    type=click.Choice(["gate_mlp", "delta"]),
+    type=click.Choice(["gate_mlp", "delta", "noisy_xt"]),
     show_default=True,
     help="Which internal diffusion variable to collect.",
 )
@@ -241,6 +288,13 @@ def _plot_hist(values, label, out_path, target, bins=120):
     help="Randomly keep at most this many values for each denoiser forward call.",
 )
 @click.option(
+    "--capture-t",
+    default=1,
+    type=int,
+    show_default=True,
+    help="For target=noisy_xt: capture x_t at this timestep. Use -1 to collect all timesteps.",
+)
+@click.option(
     "--dataset-path",
     default="data/pusht/pusht_cchi_v7_replay.zarr",
     type=str,
@@ -258,6 +312,7 @@ def main(
     block_index,
     bins,
     max_points_per_call,
+    capture_t,
     dataset_path,
 ):
     output_dir = os.path.abspath(output_dir)
@@ -275,29 +330,44 @@ def main(
         dataset_path=dataset_path,
     )
     loader = _build_val_loader(cfg)
-    values, used_block = _collect_internal_values(
-        cfg=cfg,
-        policy=policy,
-        loader=loader,
-        device=device,
-        max_batches=max_batches,
-        target=target,
-        block_index=block_index,
-        max_points_per_call=max_points_per_call,
-    )
+    if target == "noisy_xt":
+        values = _collect_noisy_xt_values(
+            cfg=cfg,
+            policy=policy,
+            loader=loader,
+            device=device,
+            max_batches=max_batches,
+            capture_t=capture_t,
+            max_points_per_call=max_points_per_call,
+        )
+        used_block = -1
+        npz_path = os.path.join(output_dir, f"{label}_{target}_t{capture_t}.npz")
+        fig_path = os.path.join(output_dir, f"{target}_t{capture_t}_hist.png")
+    else:
+        values, used_block = _collect_internal_values(
+            cfg=cfg,
+            policy=policy,
+            loader=loader,
+            device=device,
+            max_batches=max_batches,
+            target=target,
+            block_index=block_index,
+            max_points_per_call=max_points_per_call,
+        )
+        npz_path = os.path.join(output_dir, f"{label}_{target}_block{used_block}.npz")
+        fig_path = os.path.join(output_dir, f"{target}_block{used_block}_hist.png")
 
-    npz_path = os.path.join(output_dir, f"{label}_{target}_block{used_block}.npz")
     np.savez_compressed(
         npz_path,
         **{target: values},
         block_index=used_block,
+        capture_t=capture_t,
         mean=values.mean(),
         std=values.std(),
     )
     print(f"[INFO] Saved values: {npz_path}")
     print(f"[INFO] {label} {target}: mean={values.mean():.6f}, std={values.std():.6f}")
 
-    fig_path = os.path.join(output_dir, f"{target}_block{used_block}_hist.png")
     _plot_hist(values, label=label, out_path=fig_path, target=target, bins=bins)
     print(f"[INFO] Saved histogram: {fig_path}")
 
