@@ -185,6 +185,71 @@ def _collect_noisy_xt_values(
 
 
 @torch.no_grad()
+def _collect_diffusion_outputs_values(
+    cfg,
+    policy,
+    loader,
+    device,
+    max_batches,
+    target,
+    capture_t,
+    max_points_per_call,
+):
+    if not hasattr(policy.model, "diffactloss"):
+        raise RuntimeError("Current checkpoint does not have action diffusion head (diffactloss).")
+
+    diffusion = policy.model.diffactloss.gen_diffusion
+    print(
+        f"[INFO] {target} capture configured at t={capture_t}; diffusion num_timesteps={diffusion.num_timesteps}"
+    )
+
+    collected = []
+    original_unbound = diffusion.__class__.p_mean_variance
+
+    def wrapped_p_mean_variance(
+        self, model, x, t, clip_denoised=True, denoised_fn=None, model_kwargs=None
+    ):
+        out = original_unbound(
+            self,
+            model,
+            x,
+            t,
+            clip_denoised=clip_denoised,
+            denoised_fn=denoised_fn,
+            model_kwargs=model_kwargs,
+        )
+
+        t_val = int(t[0].item())
+        if capture_t < 0 or t_val == capture_t:
+            if target == "pred_xstart":
+                values_tensor = out["pred_xstart"]
+            elif target == "model_mean":
+                values_tensor = out["mean"]
+            elif target == "eps_pred":
+                values_tensor = self._predict_eps_from_xstart(x, t, out["pred_xstart"])
+            else:
+                raise ValueError(f"Unsupported diffusion output target: {target}")
+
+            values = values_tensor.detach().float().reshape(-1).cpu().numpy()
+            values = _maybe_downsample(values, max_points_per_call)
+            collected.append(values)
+
+        return out
+
+    diffusion.p_mean_variance = types.MethodType(wrapped_p_mean_variance, diffusion)
+    try:
+        _run_policy_sample_tokens(cfg, policy, loader, device, max_batches=max_batches)
+    finally:
+        diffusion.p_mean_variance = types.MethodType(original_unbound, diffusion)
+
+    if len(collected) == 0:
+        raise RuntimeError(
+            f"No {target} values collected at t={capture_t}. Use --capture-t -1 to collect all timesteps."
+        )
+    return np.concatenate(collected, axis=0)
+
+
+@torch.no_grad()
 def _collect_internal_values(
     cfg,
     policy,
@@ -246,6 +311,16 @@ def _plot_hist(values, label, out_path, target, bins=120):
     plt.close()
 
 
+def _transform_values(values, value_mode):
+    if value_mode == "raw":
+        return values
+    if value_mode == "abs":
+        return np.abs(values)
+    if value_mode == "square":
+        return values**2
+    raise ValueError(f"Unsupported value_mode: {value_mode}")
+
+
 @click.command()
 @click.option(
     "--checkpoint",
@@ -268,7 +343,9 @@ def _plot_hist(values, label, out_path, target, bins=120):
 @click.option(
     "--target",
     default="gate_mlp",
-    type=click.Choice(["gate_mlp", "delta", "noisy_xt"]),
+    type=click.Choice(
+        ["gate_mlp", "delta", "noisy_xt", "eps_pred", "pred_xstart", "model_mean"]
+    ),
     show_default=True,
     help="Which internal diffusion variable to collect.",
 )
@@ -281,6 +358,13 @@ def _plot_hist(values, label, out_path, target, bins=120):
 )
 @click.option("--bins", default=120, type=int, show_default=True)
 @click.option(
+    "--value-mode",
+    default="raw",
+    type=click.Choice(["raw", "abs", "square"]),
+    show_default=True,
+    help="How to transform collected values before plotting/saving.",
+)
+@click.option(
     "--max-points-per-call",
     default=200000,
     type=int,
@@ -292,7 +376,7 @@ def _plot_hist(values, label, out_path, target, bins=120):
     default=1,
     type=int,
     show_default=True,
-    help="For target=noisy_xt: capture x_t at this timestep. Use -1 to collect all timesteps.",
+    help="For diffusion-step targets (noisy_xt/eps_pred/pred_xstart/model_mean), capture values at this timestep. Use -1 to collect all timesteps.",
 )
 @click.option(
     "--dataset-path",
@@ -311,6 +395,7 @@ def main(
     target,
     block_index,
     bins,
+    value_mode,
     max_points_per_call,
     capture_t,
     dataset_path,
@@ -343,6 +428,20 @@ def main(
         used_block = -1
         npz_path = os.path.join(output_dir, f"{label}_{target}_t{capture_t}.npz")
         fig_path = os.path.join(output_dir, f"{target}_t{capture_t}_hist.png")
+    elif target in {"eps_pred", "pred_xstart", "model_mean"}:
+        values = _collect_diffusion_outputs_values(
+            cfg=cfg,
+            policy=policy,
+            loader=loader,
+            device=device,
+            max_batches=max_batches,
+            target=target,
+            capture_t=capture_t,
+            max_points_per_call=max_points_per_call,
+        )
+        used_block = -1
+        npz_path = os.path.join(output_dir, f"{label}_{target}_t{capture_t}.npz")
+        fig_path = os.path.join(output_dir, f"{target}_t{capture_t}_hist.png")
     else:
         values, used_block = _collect_internal_values(
             cfg=cfg,
@@ -357,18 +456,34 @@ def main(
         npz_path = os.path.join(output_dir, f"{label}_{target}_block{used_block}.npz")
         fig_path = os.path.join(output_dir, f"{target}_block{used_block}_hist.png")
 
+    values_out = _transform_values(values, value_mode)
+
     np.savez_compressed(
         npz_path,
-        **{target: values},
+        **{target: values_out},
         block_index=used_block,
         capture_t=capture_t,
-        mean=values.mean(),
-        std=values.std(),
+        value_mode=value_mode,
+        mean=values_out.mean(),
+        std=values_out.std(),
     )
     print(f"[INFO] Saved values: {npz_path}")
-    print(f"[INFO] {label} {target}: mean={values.mean():.6f}, std={values.std():.6f}")
+    print(
+        f"[INFO] {label} {target} ({value_mode}): "
+        f"mean={values_out.mean():.6f}, std={values_out.std():.6f}"
+    )
 
-    _plot_hist(values, label=label, out_path=fig_path, target=target, bins=bins)
+    if target == "noisy_xt":
+        fig_path = fig_path.replace(".png", f"_{value_mode}.png")
+    else:
+        fig_path = fig_path.replace(".png", f"_{value_mode}.png")
+    _plot_hist(
+        values_out,
+        label=label,
+        out_path=fig_path,
+        target=f"{target} ({value_mode})",
+        bins=bins,
+    )
     print(f"[INFO] Saved histogram: {fig_path}")
 
 
