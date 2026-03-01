@@ -185,6 +185,48 @@ def _collect_noisy_xt_values(
 
 
 @torch.no_grad()
+def _collect_noisy_xt_values_by_t(
+    cfg,
+    policy,
+    loader,
+    device,
+    max_batches,
+    max_points_per_call,
+):
+    if not hasattr(policy.model, "diffactloss"):
+        raise RuntimeError("Current checkpoint does not have action diffusion head (diffactloss).")
+
+    diffusion = policy.model.diffactloss.gen_diffusion
+    print(f"[INFO] noisy_xt sweep capture; diffusion num_timesteps={diffusion.num_timesteps}")
+
+    collected = {}
+    original_unbound = diffusion.__class__.p_sample
+
+    def wrapped_p_sample(self, model, x, t, *args, **kwargs):
+        t_val = int(t[0].item())
+        values = x.detach().float().reshape(-1).cpu().numpy()
+        values = _maybe_downsample(values, max_points_per_call)
+        if t_val not in collected:
+            collected[t_val] = []
+        collected[t_val].append(values)
+        return original_unbound(self, model, x, t, *args, **kwargs)
+
+    diffusion.p_sample = types.MethodType(wrapped_p_sample, diffusion)
+    try:
+        _run_policy_sample_tokens(cfg, policy, loader, device, max_batches=max_batches)
+    finally:
+        diffusion.p_sample = types.MethodType(original_unbound, diffusion)
+
+    if len(collected) == 0:
+        raise RuntimeError("No noisy_xt values collected in sweep mode.")
+
+    merged = {}
+    for t_val, vals in collected.items():
+        merged[t_val] = np.concatenate(vals, axis=0)
+    return merged
+
+
+@torch.no_grad()
 def _collect_diffusion_outputs_values(
     cfg,
     policy,
@@ -311,6 +353,47 @@ def _plot_hist(values, label, out_path, target, bins=120):
     plt.close()
 
 
+def _plot_hist_sweep(t_to_values, label, out_path, bins=120, interval=10):
+    all_t = sorted(t_to_values.keys())
+    selected_t = []
+    for t in all_t:
+        if t % interval == 0:
+            selected_t.append(t)
+    if all_t[0] not in selected_t:
+        selected_t.insert(0, all_t[0])
+    if all_t[-1] not in selected_t:
+        selected_t.append(all_t[-1])
+    selected_t = sorted(list(dict.fromkeys(selected_t)), reverse=True)
+
+    n = len(selected_t)
+    ncols = 3
+    nrows = (n + ncols - 1) // ncols
+    fig, axes = plt.subplots(nrows=nrows, ncols=ncols, figsize=(15, 3.8 * nrows))
+    axes = np.array(axes).reshape(-1)
+
+    # shared x-range for fair visual comparison
+    all_values = np.concatenate([t_to_values[t] for t in selected_t], axis=0)
+    x_low, x_high = np.quantile(all_values, [0.001, 0.999])
+
+    for i, t in enumerate(selected_t):
+        ax = axes[i]
+        vals = t_to_values[t]
+        ax.hist(vals, bins=bins, density=True, alpha=0.75)
+        ax.set_xlim(x_low, x_high)
+        ax.set_title(f"t={t}")
+        ax.set_xlabel("noisy_xt value")
+        ax.set_ylabel("density")
+        ax.grid(alpha=0.2)
+
+    for j in range(n, len(axes)):
+        axes[j].axis("off")
+
+    fig.suptitle(f"noisy_xt evolution ({label})", fontsize=14)
+    fig.tight_layout()
+    fig.savefig(out_path, dpi=220)
+    plt.close(fig)
+
+
 def _transform_values(values, value_mode):
     if value_mode == "raw":
         return values
@@ -344,7 +427,15 @@ def _transform_values(values, value_mode):
     "--target",
     default="gate_mlp",
     type=click.Choice(
-        ["gate_mlp", "delta", "noisy_xt", "eps_pred", "pred_xstart", "model_mean"]
+        [
+            "gate_mlp",
+            "delta",
+            "noisy_xt",
+            "noisy_xt_sweep",
+            "eps_pred",
+            "pred_xstart",
+            "model_mean",
+        ]
     ),
     show_default=True,
     help="Which internal diffusion variable to collect.",
@@ -379,6 +470,13 @@ def _transform_values(values, value_mode):
     help="For diffusion-step targets (noisy_xt/eps_pred/pred_xstart/model_mean), capture values at this timestep. Use -1 to collect all timesteps.",
 )
 @click.option(
+    "--sweep-interval",
+    default=10,
+    type=int,
+    show_default=True,
+    help="For noisy_xt_sweep: plot one histogram every N timesteps.",
+)
+@click.option(
     "--dataset-path",
     default="data/pusht/pusht_cchi_v7_replay.zarr",
     type=str,
@@ -398,6 +496,7 @@ def main(
     value_mode,
     max_points_per_call,
     capture_t,
+    sweep_interval,
     dataset_path,
 ):
     output_dir = os.path.abspath(output_dir)
@@ -428,6 +527,36 @@ def main(
         used_block = -1
         npz_path = os.path.join(output_dir, f"{label}_{target}_t{capture_t}.npz")
         fig_path = os.path.join(output_dir, f"{target}_t{capture_t}_hist.png")
+    elif target == "noisy_xt_sweep":
+        t_to_values = _collect_noisy_xt_values_by_t(
+            cfg=cfg,
+            policy=policy,
+            loader=loader,
+            device=device,
+            max_batches=max_batches,
+            max_points_per_call=max_points_per_call,
+        )
+        used_block = -1
+        # apply value transform per timestep
+        t_to_values = {k: _transform_values(v, value_mode) for k, v in t_to_values.items()}
+        npz_path = os.path.join(output_dir, f"{label}_{target}_{value_mode}.npz")
+        np.savez_compressed(
+            npz_path,
+            timesteps=np.array(sorted(t_to_values.keys()), dtype=np.int64),
+            **{f"t_{k}": v for k, v in t_to_values.items()},
+            value_mode=value_mode,
+        )
+        print(f"[INFO] Saved values: {npz_path}")
+        fig_path = os.path.join(output_dir, f"{target}_{value_mode}_every{sweep_interval}.png")
+        _plot_hist_sweep(
+            t_to_values=t_to_values,
+            label=label,
+            out_path=fig_path,
+            bins=bins,
+            interval=sweep_interval,
+        )
+        print(f"[INFO] Saved histogram sweep: {fig_path}")
+        return
     elif target in {"eps_pred", "pred_xstart", "model_mean"}:
         values = _collect_diffusion_outputs_values(
             cfg=cfg,
