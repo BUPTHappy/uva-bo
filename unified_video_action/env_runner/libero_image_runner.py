@@ -1,5 +1,6 @@
 import os
 import sys
+from pathlib import Path
 import wandb
 import numpy as np
 import torch
@@ -9,6 +10,7 @@ import tqdm
 import h5py
 import math
 import dill
+import scipy.spatial.transform as st
 import wandb.sdk.data_types.video as wv
 from unified_video_action.gym_util.async_vector_env import AsyncVectorEnv
 from unified_video_action.gym_util.multistep_wrapper import MultiStepWrapper
@@ -32,10 +34,38 @@ import robomimic.utils.env_utils as EnvUtils
 import robomimic.utils.obs_utils as ObsUtils
 
 
-current_dir = os.getcwd()
-parent_dir = os.path.abspath(os.path.join(current_dir, ".."))
-libero_path = os.path.join(parent_dir, "LIBERO")
-sys.path.append(libero_path)
+def _resolve_libero_root():
+    # 1) explicit env var
+    env_candidates = [
+        os.environ.get("JIT_LIBERO_ROOT"),
+        os.environ.get("LIBERO_ROOT"),
+    ]
+    for c in env_candidates:
+        if c and os.path.isdir(c):
+            return os.path.abspath(c)
+
+    # 2) infer from this file location
+    here = Path(__file__).resolve()
+    pkg_root = here.parent.parent  # .../unified_video_action/unified_video_action
+    repo_root = pkg_root.parent     # .../unified_video_action (or .../uva-bo)
+    candidates = [
+        repo_root / "LIBERO",
+        repo_root.parent / "LIBERO",
+    ]
+    for c in candidates:
+        if c.is_dir():
+            return str(c.resolve())
+    return None
+
+
+libero_path = _resolve_libero_root()
+if libero_path is None:
+    raise ImportError(
+        "Cannot locate LIBERO repository. Set JIT_LIBERO_ROOT or LIBERO_ROOT "
+        "to your LIBERO folder."
+    )
+if libero_path not in sys.path:
+    sys.path.append(libero_path)
 from libero.libero.envs.bddl_base_domain import TASK_MAPPING
 
 
@@ -109,11 +139,33 @@ class LiberoImageRunner(BaseImageRunner):
         rotation_transformer = None
         if abs_action:
             env_meta["env_kwargs"]["controller_configs"]["control_delta"] = False
-            from unified_video_action.model.common.rotation_transformer import (
-                RotationTransformer,
-            )
+            try:
+                from unified_video_action.model.common.rotation_transformer import (
+                    RotationTransformer,
+                )
+                rotation_transformer = RotationTransformer("axis_angle", "rotation_6d")
+            except ModuleNotFoundError:
+                # Fallback: avoid hard dependency on pytorch3d for eval-only runs.
+                class _FallbackRotationTransformer:
+                    @staticmethod
+                    def inverse(rot6d):
+                        rot6d = np.asarray(rot6d, dtype=np.float32)
+                        in_shape = rot6d.shape[:-1]
+                        x = rot6d.reshape(-1, 6)
 
-            rotation_transformer = RotationTransformer("axis_angle", "rotation_6d")
+                        a1 = x[:, 0:3]
+                        a2 = x[:, 3:6]
+                        b1 = a1 / (np.linalg.norm(a1, axis=1, keepdims=True) + 1e-8)
+                        a2_ortho = a2 - np.sum(b1 * a2, axis=1, keepdims=True) * b1
+                        b2 = a2_ortho / (np.linalg.norm(a2_ortho, axis=1, keepdims=True) + 1e-8)
+                        b3 = np.cross(b1, b2)
+                        mat = np.stack([b1, b2, b3], axis=-1)  # (N, 3, 3)
+
+                        rotvec = st.Rotation.from_matrix(mat).as_rotvec().astype(np.float32)
+                        return rotvec.reshape(*in_shape, 3)
+
+                print("Warning: pytorch3d not found, using scipy fallback for rotation conversion.")
+                rotation_transformer = _FallbackRotationTransformer()
 
         def env_fn():
             libero_env = create_env(env_meta=env_meta, shape_meta=shape_meta)
