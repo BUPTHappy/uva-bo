@@ -159,7 +159,9 @@ class LiberoImageRunner(BaseImageRunner):
                         a2_ortho = a2 - np.sum(b1 * a2, axis=1, keepdims=True) * b1
                         b2 = a2_ortho / (np.linalg.norm(a2_ortho, axis=1, keepdims=True) + 1e-8)
                         b3 = np.cross(b1, b2)
-                        mat = np.stack([b1, b2, b3], axis=-1)  # (N, 3, 3)
+                        # Match pytorch3d.rotation_6d_to_matrix behavior:
+                        # stack basis as rows (dim=-2), not columns.
+                        mat = np.stack([b1, b2, b3], axis=1)  # (N, 3, 3)
 
                         rotvec = st.Rotation.from_matrix(mat).as_rotvec().astype(np.float32)
                         return rotvec.reshape(*in_shape, 3)
