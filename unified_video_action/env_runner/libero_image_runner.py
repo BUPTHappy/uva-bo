@@ -314,7 +314,12 @@ class LiberoImageRunner(BaseImageRunner):
         self.tqdm_interval_sec = tqdm_interval_sec
 
         if len(pre_collected_actions) > 0:
-            self.pre_collected_actions = np.stack(pre_collected_actions)
+            # Demonstration action sequences can have variable lengths across episodes.
+            # Keep them as a list (or object array fallback) to avoid shape mismatch on stack.
+            try:
+                self.pre_collected_actions = np.stack(pre_collected_actions)
+            except ValueError:
+                self.pre_collected_actions = pre_collected_actions
         self.language_goal = " ".join(task_dir.split("/")[-1][:-10].split("_"))
         self.task_name = env_meta["bddl_file"].split("/")[-1][:-5]
 
