@@ -2,6 +2,7 @@ import argparse
 import json
 import os
 import pathlib
+import sys
 import time
 from typing import Callable, Dict, List
 
@@ -10,6 +11,42 @@ import numpy as np
 import torch
 from hydra import compose, initialize_config_dir
 from omegaconf import OmegaConf
+
+
+def _ensure_transformers_stub() -> None:
+    """
+    UVA imports transformers at module import time even when language conditioning is disabled.
+    For benchmark-only environments without transformers installed, inject a tiny stub so
+    policy construction can proceed.
+    """
+    try:
+        import transformers  # noqa: F401
+        return
+    except ImportError:
+        pass
+
+    class _DummyTokenizer:
+        @classmethod
+        def from_pretrained(cls, *args, **kwargs):
+            return cls()
+
+    class _DummyTextModel:
+        @classmethod
+        def from_pretrained(cls, *args, **kwargs):
+            return cls()
+
+        def get_text_features(self, **kwargs):
+            raise RuntimeError(
+                "transformers is not installed; text features are unavailable in benchmark mode."
+            )
+
+    class _DummyTransformersModule:
+        T5Tokenizer = _DummyTokenizer
+        T5EncoderModel = _DummyTextModel
+        AutoTokenizer = _DummyTokenizer
+        CLIPModel = _DummyTextModel
+
+    sys.modules["transformers"] = _DummyTransformersModule()
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -148,6 +185,7 @@ def main():
 
     device = torch.device(args.device)
     cfg = _load_uva_cfg(args.dataset_type)
+    _ensure_transformers_stub()
     cfg.model.policy.action_model_params.predict_action = True
     cfg.model.policy.selected_training_mode = "policy_model"
     cfg.task.dataset.normalizer_type = args.normalizer_type
