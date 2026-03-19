@@ -28,7 +28,7 @@ from unified_video_action.utils.language_model import (
     get_text_model,
     extract_text_features,
 )
-
+from unified_video_action.model.common.student_tokenizer import StudentLatentTokenizer
 
 class UnifiedVideoActionPolicy(BaseImagePolicy):
     def __init__(
@@ -43,7 +43,7 @@ class UnifiedVideoActionPolicy(BaseImagePolicy):
         task_name=None,
         task_modes=[],
         **kwargs
-    ):
+     ):
         super().__init__()
 
         self.task_name = task_name
@@ -61,14 +61,62 @@ class UnifiedVideoActionPolicy(BaseImagePolicy):
         self.use_history_action = kwargs["use_history_action"]
         self.use_proprioception = kwargs["use_proprioception"]
 
-        ## =========================== load vae model ===========================
+        # =========================== REPA-style student tokenizer config ===========================
+        self.use_student_tokenizer = bool(kwargs.get("use_student_tokenizer", False))
+        self.student_tokenizer_params = kwargs.get("student_tokenizer_params", None)
+        self.align_params = kwargs.get("align_params", None)
+
+        # alignment controls 
+        self.use_alignment = False
+        self.align_coeff = 0.0
+        self.align_warmup_steps = 0
+        self.align_loss_type = "cosine"
+        self.align_use_projector = True
+        self.align_projector = None
+        self.align_teacher_use_mode = True
+        self._align_step = 0
+
+        if self.align_params is not None:
+            self.use_alignment = bool(self.align_params.get("enable", False))
+            self.align_coeff = float(self.align_params.get("coeff", 0.0))
+            self.align_warmup_steps = int(self.align_params.get("warmup_steps", 0))
+            self.align_loss_type = str(self.align_params.get("loss_type", "cosine"))
+            self.align_use_projector = bool(self.align_params.get("use_projector", True))
+            self.align_teacher_use_mode = bool(self.align_params.get("teacher_use_mode", True))
+
+        # =========================== load vae model (teacher / legacy path) ===========================
         with torch.no_grad():
             self.vae_model = AutoencoderKL(**vae_model_params)
         self.vae_model.eval()
         for param in self.vae_model.parameters():
             param.requires_grad = False
 
-        ## =========================== load language model ===========================
+        # =========================== student tokenizer ===========================
+        self.student_tokenizer = None
+        if self.use_student_tokenizer:
+            if self.student_tokenizer_params is None:
+                raise ValueError(
+                    "use_student_tokenizer=True but student_tokenizer_params is not provided."
+                )
+            self.student_tokenizer = StudentLatentTokenizer(**self.student_tokenizer_params)
+
+            if self.use_alignment and self.align_use_projector:
+                latent_channels = int(
+                    self.student_tokenizer_params.get(
+                        "latent_channels", autoregressive_model_params.vae_embed_dim
+                    )
+                )
+                hidden_dim = int(self.student_tokenizer_params.get("hidden_dim", 256))
+                projector_dim = int(self.align_params.get("projector_dim", 512))
+                self.align_projector = torch.nn.Sequential(
+                    torch.nn.Linear(hidden_dim, projector_dim),
+                    torch.nn.SiLU(),
+                    torch.nn.Linear(projector_dim, projector_dim),
+                    torch.nn.SiLU(),
+                    torch.nn.Linear(projector_dim, latent_channels),
+                )
+
+        # =========================== load language model ===========================
         self.text_model, self.tokenizer, self.max_length = get_text_model(
             task_name, language_emb_model
         )
@@ -77,7 +125,7 @@ class UnifiedVideoActionPolicy(BaseImagePolicy):
             for param in self.text_model.parameters():
                 param.requires_grad = False
 
-        ## =========================== main model ===========================
+        # =========================== main model ===========================
         self.model = mar.__dict__[autoregressive_model_params.model_size](
             img_size=autoregressive_model_params.img_size,
             vae_stride=autoregressive_model_params.vae_stride,
@@ -109,14 +157,14 @@ class UnifiedVideoActionPolicy(BaseImagePolicy):
             shape_meta=shape_meta,
         )
 
-        ## =========================== load pretrained model ===========================
+        # =========================== load pretrained model ===========================
         self.pretrained_model_path = autoregressive_model_params.pretrained_model_path
         if self.pretrained_model_path is not None:
             if os.path.exists(self.pretrained_model_path):
                 self.load_pretrained_model()
             else:
-                print('pretrained model not found: ', self.pretrained_model_path)
-        
+                print("pretrained model not found: ", self.pretrained_model_path)
+
         self.normalizer = LinearNormalizer()
 
         if self.selected_training_mode is None:
@@ -276,14 +324,22 @@ class UnifiedVideoActionPolicy(BaseImagePolicy):
             {"obs": obs_dict}, task_name=self.task_name, eval=True, **self.kwargs
         )
 
-        if self.use_proprioception:
-            if "second_image" in proprioception_input:
-                second_image_z, _ = extract_latent_autoregressive(
-                    self.vae_model, proprioception_input["second_image"]
-                )
-                proprioception_input["second_image_z"] = second_image_z
-
-        c, latent_size = extract_latent_autoregressive(self.vae_model, c.detach())
+        if self.use_student_tokenizer and self.student_tokenizer is not None:
+            if self.use_proprioception and proprioception_input is not None:
+                if "second_image" in proprioception_input:
+                    second_image_z, _ = self._encode_student_latent(
+                        proprioception_input["second_image"]
+                    )
+                    proprioception_input["second_image_z"] = second_image_z
+            c, _ = self._encode_student_latent(c.detach())
+        else:
+            if self.use_proprioception and proprioception_input is not None:
+                if "second_image" in proprioception_input:
+                    second_image_z, _ = extract_latent_autoregressive(
+                        self.vae_model, proprioception_input["second_image"]
+                    )
+                    proprioception_input["second_image_z"] = second_image_z
+            c, _ = extract_latent_autoregressive(self.vae_model, c.detach())
 
         z, act_out = self.model.sample_tokens(
             bsz=B,
@@ -304,7 +360,6 @@ class UnifiedVideoActionPolicy(BaseImagePolicy):
 
         naction_pred = act_out[..., :Da]
 
-        ## unnormalize action
         action_pred = unnormalize_future_action(
             normalizer=self.normalizer,
             normalizer_type=self.normalizer_type,
@@ -346,18 +401,87 @@ class UnifiedVideoActionPolicy(BaseImagePolicy):
         learning_rate: float,
         betas: Tuple[float, float],
     ) -> torch.optim.Optimizer:
+        optim_groups = []
 
-        optim_groups = self.add_weight_decay(self.model, weight_decay=weight_decay)
+        optim_groups.extend(self.add_weight_decay(self.model, weight_decay=weight_decay))
+
+        if self.use_student_tokenizer and self.student_tokenizer is not None:
+            optim_groups.extend(
+                self.add_weight_decay(self.student_tokenizer, weight_decay=weight_decay)
+            )
+
+        if self.align_projector is not None:
+            optim_groups.extend(
+                self.add_weight_decay(self.align_projector, weight_decay=weight_decay)
+            )
+
         optimizer = torch.optim.AdamW(optim_groups, lr=learning_rate, betas=betas)
 
-        # Manually set 'initial_lr' for each parameter group (assuming a base learning rate)
         for param_group in optimizer.param_groups:
             if "initial_lr" not in param_group:
-                param_group["initial_lr"] = param_group[
-                    "lr"
-                ]  # or set a specific initial learning rate
+                param_group["initial_lr"] = param_group["lr"]
 
         return optimizer
+
+    def _extract_teacher_latent(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        Teacher path (frozen VAE): x [B, C, T, H, W] -> z [B, T, C_lat, H_lat, W_lat]
+        """
+        x = x.float()
+        B, C, T, H, W = x.size()
+        with torch.no_grad():
+            x_ = x.permute(0, 2, 1, 3, 4).reshape(B * T, C, H, W)
+            posterior = self.vae_model.encode(x_)
+            if self.align_teacher_use_mode and hasattr(posterior, "mode"):
+                z = posterior.mode()
+            else:
+                z = posterior.sample()
+            z = z.mul_(0.2325)
+            z = z.reshape(B, T, z.shape[1], z.shape[2], z.shape[3])
+        return z
+
+    def _latent_to_tokens(self, z: torch.Tensor) -> torch.Tensor:
+        """
+        z [B, T, C, H, W] -> [B, T, S, C]
+        """
+        B, T, C, H, W = z.shape
+        return z.permute(0, 1, 3, 4, 2).reshape(B, T, H * W, C)
+
+    def _encode_student_latent(self, x: torch.Tensor):
+        """
+        x [B, C, T, H, W] -> latent [B, T, C_lat, H_lat, W_lat], token_feat [B, T, S, D]
+        """
+        latent, token_feat = self.student_tokenizer(x)
+        return latent, token_feat
+
+    def _get_align_coeff(self) -> float:
+        if not self.use_alignment:
+            return 0.0
+        if self.align_warmup_steps <= 0:
+            return self.align_coeff
+        ratio = min(1.0, float(self._align_step) / float(self.align_warmup_steps))
+        return self.align_coeff * ratio
+
+    def _compute_alignment_loss(
+        self,
+        student_tokens: torch.Tensor,
+        teacher_tokens: torch.Tensor,
+    ) -> torch.Tensor:
+        """
+        student_tokens: [B, T, S, D_s] (from student tokenizer hidden features)
+        teacher_tokens: [B, T, S, D_t] (from VAE latent tokens)
+        """
+        if self.align_projector is not None:
+            student_tokens = self.align_projector(student_tokens)
+
+        if self.align_loss_type.lower() == "mse":
+            return F.mse_loss(student_tokens, teacher_tokens)
+
+        # default: cosine (REPA style)
+        student_tokens = F.normalize(student_tokens, dim=-1)
+        teacher_tokens = F.normalize(teacher_tokens, dim=-1)
+        return (1.0 - (student_tokens * teacher_tokens).sum(dim=-1)).mean()
+
 
     def compute_loss(self, batch, **kwargs):
         B, T, C, H, W = batch["obs"]["image"].size()
@@ -398,9 +522,45 @@ class UnifiedVideoActionPolicy(BaseImagePolicy):
         x, proprioception_input, _ = process_data(
             batch, task_name=self.task_name, **self.kwargs
         )
-        x, z, c, _, proprioception_input = get_vae_latent(
+
+        align_loss = torch.tensor(0.0, device=x.device)
+        if self.use_student_tokenizer and self.student_tokenizer is not None:
+            c_img, x_img = torch.chunk(x, 2, dim=2)
+            
+            z, z_feat = self._encode_student_latent(x_img)
+            c, c_feat = self._encode_student_latent(c_img)
+
+            if proprioception_input is not None:
+                if "second_image" in proprioception_input:
+                    second_image_z, _ = self._encode_student_latent(proprioception_input["second_image"])
+                    proprioception_input["second_image_z"] = second_image_z
+                if "pred_second_image" in proprioception_input:
+                    pred_second_image_z, _ = self._encode_student_latent(proprioception_input["pred_second_image"])
+                    proprioception_input["pred_second_image_z"] = pred_second_image_z
+
+            if self.use_alignment:
+                teacher_z = self._extract_teacher_latent(x_img)
+                teacher_c = self._extract_teacher_latent(c_img)
+
+                teacher_z_tokens = self._latent_to_tokens(teacher_z)
+                teacher_c_tokens = self._latent_to_tokens(teacher_c)
+                assert z_feat.shape[:3] == teacher_z_tokens.shape[:3], (
+                    z_feat.shape,
+                    teacher_z_tokens.shape,
+                )
+                assert c_feat.shape[:3] == teacher_c_tokens.shape[:3], (
+                    c_feat.shape,
+                    teacher_c_tokens.shape,
+                )
+
+                align_loss_z = self._compute_alignment_loss(z_feat, teacher_z_tokens)
+                align_loss_c = self._compute_alignment_loss(c_feat, teacher_c_tokens)
+                align_loss = 0.5 * (align_loss_z + align_loss_c)
+        else:
+             x, z, c, _, proprioception_input = get_vae_latent(
             x, self.vae_model, eval=False, proprioception_input=proprioception_input
         )
+
         history_trajectory, trajectory = get_trajectory(
             nactions, T, self.shift_action, use_history_action=self.use_history_action
         )
@@ -417,12 +577,28 @@ class UnifiedVideoActionPolicy(BaseImagePolicy):
             proprioception_input=proprioception_input,
         )
 
+        if self.use_student_tokenizer and self.use_alignment:
+            coeff = self._get_align_coeff()
+            loss = loss + coeff * align_loss
+            if self.training:
+                self._align_step += 1
+
         ## not recommended, fix the problem in DDM unused parameters
         for param in self.model.parameters():
             if param.grad is None:  # Likely unused in loss computation
                 loss += 0 * param.sum()
 
-        return loss, (video_loss, act_loss)
+        if self.student_tokenizer is not None:
+            for param in self.student_tokenizer.parameters():
+                if param.grad is None:
+                    loss += 0 * param.sum()
+
+        if self.align_projector is not None:
+            for param in self.align_projector.parameters():
+                if param.grad is None:
+                    loss += 0 * param.sum()
+
+        return loss, (video_loss, act_loss, align_loss)
 
     def forward(self, batch, **kwargs):
         return self.compute_loss(batch, **kwargs)

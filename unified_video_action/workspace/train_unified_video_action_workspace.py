@@ -258,9 +258,19 @@ class TrainUnifiedVideoActionWorkspace(BaseWorkspace):
                         and cfg.training.deepspeed_config is not None
                     ): 
                         with torch.autocast(device_type="cuda", dtype=torch.bfloat16): # You might need to change the device_type to str(device) for other versions of torch
-                            raw_loss, (loss_diffusion, loss_action) = self.model(batch)
+                            raw_loss, loss_tuple = self.model(batch)
+                            if len(loss_tuple) == 3:
+                                loss_diffusion, loss_action, loss_align = loss_tuple
+                            else:
+                                loss_diffusion, loss_action = loss_tuple
+                                loss_align = torch.tensor(0.0, device=raw_loss.device)
                     else:
-                        raw_loss, (loss_diffusion, loss_action) = self.model(batch)
+                        raw_loss, loss_tuple = self.model(batch)
+                        if len(loss_tuple) == 3:
+                            loss_diffusion, loss_action, loss_align = loss_tuple
+                        else:
+                            loss_diffusion, loss_action = loss_tuple
+                            loss_align = torch.tensor(0.0, device=raw_loss.device)
 
                     accelerator.backward(raw_loss)
 
@@ -289,11 +299,13 @@ class TrainUnifiedVideoActionWorkspace(BaseWorkspace):
                         loss_action_cpu = loss_action.item()
                     else:
                         loss_action_cpu = 0.0
+                    loss_align_cpu = loss_align.item()
 
                     step_log = {
                         "train_loss": raw_loss_cpu,
                         "diffusion_loss": loss_diffusion_cpu,
                         "action_loss": loss_action_cpu,
+                        "align_loss": loss_align_cpu,
                         "global_step": self.global_step,
                         "epoch": self.epoch,
                         "lr": self.lr_scheduler.get_last_lr()[0],
