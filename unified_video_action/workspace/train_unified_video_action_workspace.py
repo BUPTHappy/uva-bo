@@ -259,18 +259,54 @@ class TrainUnifiedVideoActionWorkspace(BaseWorkspace):
                     ): 
                         with torch.autocast(device_type="cuda", dtype=torch.bfloat16): # You might need to change the device_type to str(device) for other versions of torch
                             raw_loss, loss_tuple = self.model(batch)
-                            if len(loss_tuple) == 3:
+                            if len(loss_tuple) >= 7:
+                                (
+                                    loss_diffusion,
+                                    loss_action,
+                                    loss_align,
+                                    loss_align_cos,
+                                    loss_align_coeff,
+                                    loss_align_student_norm,
+                                    loss_align_teacher_norm,
+                                ) = loss_tuple[:7]
+                            elif len(loss_tuple) == 3:
                                 loss_diffusion, loss_action, loss_align = loss_tuple
+                                loss_align_cos = torch.tensor(0.0, device=raw_loss.device)
+                                loss_align_coeff = torch.tensor(0.0, device=raw_loss.device)
+                                loss_align_student_norm = torch.tensor(0.0, device=raw_loss.device)
+                                loss_align_teacher_norm = torch.tensor(0.0, device=raw_loss.device)
                             else:
                                 loss_diffusion, loss_action = loss_tuple
                                 loss_align = torch.tensor(0.0, device=raw_loss.device)
+                                loss_align_cos = torch.tensor(0.0, device=raw_loss.device)
+                                loss_align_coeff = torch.tensor(0.0, device=raw_loss.device)
+                                loss_align_student_norm = torch.tensor(0.0, device=raw_loss.device)
+                                loss_align_teacher_norm = torch.tensor(0.0, device=raw_loss.device)
                     else:
                         raw_loss, loss_tuple = self.model(batch)
-                        if len(loss_tuple) == 3:
+                        if len(loss_tuple) >= 7:
+                            (
+                                loss_diffusion,
+                                loss_action,
+                                loss_align,
+                                loss_align_cos,
+                                loss_align_coeff,
+                                loss_align_student_norm,
+                                loss_align_teacher_norm,
+                            ) = loss_tuple[:7]
+                        elif len(loss_tuple) == 3:
                             loss_diffusion, loss_action, loss_align = loss_tuple
+                            loss_align_cos = torch.tensor(0.0, device=raw_loss.device)
+                            loss_align_coeff = torch.tensor(0.0, device=raw_loss.device)
+                            loss_align_student_norm = torch.tensor(0.0, device=raw_loss.device)
+                            loss_align_teacher_norm = torch.tensor(0.0, device=raw_loss.device)
                         else:
                             loss_diffusion, loss_action = loss_tuple
                             loss_align = torch.tensor(0.0, device=raw_loss.device)
+                            loss_align_cos = torch.tensor(0.0, device=raw_loss.device)
+                            loss_align_coeff = torch.tensor(0.0, device=raw_loss.device)
+                            loss_align_student_norm = torch.tensor(0.0, device=raw_loss.device)
+                            loss_align_teacher_norm = torch.tensor(0.0, device=raw_loss.device)
 
                     accelerator.backward(raw_loss)
 
@@ -300,12 +336,20 @@ class TrainUnifiedVideoActionWorkspace(BaseWorkspace):
                     else:
                         loss_action_cpu = 0.0
                     loss_align_cpu = loss_align.item()
+                    loss_align_cos_cpu = loss_align_cos.item()
+                    loss_align_coeff_cpu = loss_align_coeff.item()
+                    loss_align_student_norm_cpu = loss_align_student_norm.item()
+                    loss_align_teacher_norm_cpu = loss_align_teacher_norm.item()
 
                     step_log = {
                         "train_loss": raw_loss_cpu,
                         "diffusion_loss": loss_diffusion_cpu,
                         "action_loss": loss_action_cpu,
                         "align_loss": loss_align_cpu,
+                        "align_cos": loss_align_cos_cpu,
+                        "align_coeff": loss_align_coeff_cpu,
+                        "align_student_norm": loss_align_student_norm_cpu,
+                        "align_teacher_norm": loss_align_teacher_norm_cpu,
                         "global_step": self.global_step,
                         "epoch": self.epoch,
                         "lr": self.lr_scheduler.get_last_lr()[0],

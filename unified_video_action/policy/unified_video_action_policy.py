@@ -74,6 +74,8 @@ class UnifiedVideoActionPolicy(BaseImagePolicy):
         self.align_use_projector = True
         self.align_projector = None
         self.align_teacher_use_mode = True
+        self.align_debug = False
+        self.align_debug_every = 200
         self._align_step = 0
 
         if self.align_params is not None:
@@ -83,6 +85,8 @@ class UnifiedVideoActionPolicy(BaseImagePolicy):
             self.align_loss_type = str(self.align_params.get("loss_type", "cosine"))
             self.align_use_projector = bool(self.align_params.get("use_projector", True))
             self.align_teacher_use_mode = bool(self.align_params.get("teacher_use_mode", True))
+            self.align_debug = bool(self.align_params.get("debug", False))
+            self.align_debug_every = int(self.align_params.get("debug_every", 200))
 
         # =========================== load vae model (teacher / legacy path) ===========================
         with torch.no_grad():
@@ -466,21 +470,48 @@ class UnifiedVideoActionPolicy(BaseImagePolicy):
         self,
         student_tokens: torch.Tensor,
         teacher_tokens: torch.Tensor,
-    ) -> torch.Tensor:
+        return_metrics: bool = False,
+    ):
         """
         student_tokens: [B, T, S, D_s] (from student tokenizer hidden features)
         teacher_tokens: [B, T, S, D_t] (from VAE latent tokens)
         """
+        student_raw = student_tokens
         if self.align_projector is not None:
             student_tokens = self.align_projector(student_tokens)
 
-        if self.align_loss_type.lower() == "mse":
-            return F.mse_loss(student_tokens, teacher_tokens)
+        assert student_tokens.shape == teacher_tokens.shape, (
+            student_tokens.shape,
+            teacher_tokens.shape,
+        )
 
-        # default: cosine (REPA style)
-        student_tokens = F.normalize(student_tokens, dim=-1)
-        teacher_tokens = F.normalize(teacher_tokens, dim=-1)
-        return (1.0 - (student_tokens * teacher_tokens).sum(dim=-1)).mean()
+        metrics = None
+        if self.align_loss_type.lower() == "mse":
+            loss = F.mse_loss(student_tokens, teacher_tokens)
+            student_tokens_norm = F.normalize(student_tokens, dim=-1)
+            teacher_tokens_norm = F.normalize(teacher_tokens, dim=-1)
+            cosine = (student_tokens_norm * teacher_tokens_norm).sum(dim=-1).mean()
+        else:
+            # default: cosine (REPA style)
+            student_tokens_norm = F.normalize(student_tokens, dim=-1)
+            teacher_tokens_norm = F.normalize(teacher_tokens, dim=-1)
+            cosine = (student_tokens_norm * teacher_tokens_norm).sum(dim=-1).mean()
+            loss = 1.0 - cosine
+
+        if return_metrics:
+            with torch.no_grad():
+                metrics = {
+                    "cosine": cosine.detach(),
+                    "student_raw_std": student_raw.detach().std(),
+                    "student_std": student_tokens.detach().std(),
+                    "teacher_std": teacher_tokens.detach().std(),
+                    "student_norm": student_tokens.detach().norm(dim=-1).mean(),
+                    "teacher_norm": teacher_tokens.detach().norm(dim=-1).mean(),
+                }
+
+        if return_metrics:
+            return loss, metrics
+        return loss
 
 
     def compute_loss(self, batch, **kwargs):
@@ -524,6 +555,10 @@ class UnifiedVideoActionPolicy(BaseImagePolicy):
         )
 
         align_loss = torch.tensor(0.0, device=x.device)
+        align_cos = torch.tensor(0.0, device=x.device)
+        align_coeff_value = torch.tensor(0.0, device=x.device)
+        align_student_norm = torch.tensor(0.0, device=x.device)
+        align_teacher_norm = torch.tensor(0.0, device=x.device)
         if self.use_student_tokenizer and self.student_tokenizer is not None:
             c_img, x_img = torch.chunk(x, 2, dim=2)
             
@@ -553,9 +588,38 @@ class UnifiedVideoActionPolicy(BaseImagePolicy):
                     teacher_c_tokens.shape,
                 )
 
-                align_loss_z = self._compute_alignment_loss(z_feat, teacher_z_tokens)
-                align_loss_c = self._compute_alignment_loss(c_feat, teacher_c_tokens)
+                align_loss_z, align_metrics_z = self._compute_alignment_loss(
+                    z_feat, teacher_z_tokens, return_metrics=True
+                )
+                align_loss_c, align_metrics_c = self._compute_alignment_loss(
+                    c_feat, teacher_c_tokens, return_metrics=True
+                )
                 align_loss = 0.5 * (align_loss_z + align_loss_c)
+                align_cos = 0.5 * (
+                    align_metrics_z["cosine"] + align_metrics_c["cosine"]
+                )
+                align_student_norm = 0.5 * (
+                    align_metrics_z["student_norm"] + align_metrics_c["student_norm"]
+                )
+                align_teacher_norm = 0.5 * (
+                    align_metrics_z["teacher_norm"] + align_metrics_c["teacher_norm"]
+                )
+
+                if (
+                    self.align_debug
+                    and self.training
+                    and (self._align_step % max(1, self.align_debug_every) == 0)
+                ):
+                    print(
+                        "[ALIGN DEBUG] "
+                        f"step={self._align_step} "
+                        f"z_feat={tuple(z_feat.shape)} teacher_z={tuple(teacher_z_tokens.shape)} "
+                        f"c_feat={tuple(c_feat.shape)} teacher_c={tuple(teacher_c_tokens.shape)} "
+                        f"loss={align_loss.item():.6f} cos={align_cos.item():.6f} "
+                        f"s_norm={align_student_norm.item():.6f} t_norm={align_teacher_norm.item():.6f} "
+                        f"s_std={0.5 * (align_metrics_z['student_std'] + align_metrics_c['student_std']):.6f} "
+                        f"t_std={0.5 * (align_metrics_z['teacher_std'] + align_metrics_c['teacher_std']):.6f}"
+                    )
         else:
              x, z, c, _, proprioception_input = get_vae_latent(
             x, self.vae_model, eval=False, proprioception_input=proprioception_input
@@ -580,6 +644,7 @@ class UnifiedVideoActionPolicy(BaseImagePolicy):
         if self.use_student_tokenizer and self.use_alignment:
             coeff = self._get_align_coeff()
             loss = loss + coeff * align_loss
+            align_coeff_value = torch.tensor(coeff, device=x.device, dtype=align_loss.dtype)
             if self.training:
                 self._align_step += 1
 
@@ -598,7 +663,15 @@ class UnifiedVideoActionPolicy(BaseImagePolicy):
                 if param.grad is None:
                     loss += 0 * param.sum()
 
-        return loss, (video_loss, act_loss, align_loss)
+        return loss, (
+            video_loss,
+            act_loss,
+            align_loss,
+            align_cos,
+            align_coeff_value,
+            align_student_norm,
+            align_teacher_norm,
+        )
 
     def forward(self, batch, **kwargs):
         return self.compute_loss(batch, **kwargs)

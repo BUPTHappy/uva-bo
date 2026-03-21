@@ -36,6 +36,8 @@ policy:
     projector_dim: 512
     teacher_target: vae_latent
     teacher_use_mode: true
+    debug: false
+    debug_every: 200
 
   vae_model_params:
     autoencoder_path: pretrained_models/vae/kl16.ckpt
