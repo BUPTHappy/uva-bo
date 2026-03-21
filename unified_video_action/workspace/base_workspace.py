@@ -8,6 +8,16 @@ import torch
 import threading
 
 
+def _load_state_dict_compat(module, state_dict, strict=True):
+    """
+    nn.Module supports ``strict``; LRScheduler / some Optimizer versions do not.
+    """
+    try:
+        return module.load_state_dict(state_dict, strict=strict)
+    except TypeError:
+        return module.load_state_dict(state_dict)
+
+
 class BaseWorkspace:
     include_keys = tuple()
     exclude_keys = tuple()
@@ -103,7 +113,9 @@ class BaseWorkspace:
                     if key == "optimizer" and "base_optimizer_state" in value_new:
                         # value_new = value_new["base_optimizer_state"]
                         continue  # HACK: optimizer state is not compatible with multi-node training. Should use accelerate.load_state
-                    self.__dict__[key].load_state_dict(value_new, strict=strict)
+                    _load_state_dict_compat(
+                        self.__dict__[key], value_new, strict=strict
+                    )
                 except Exception as e:
                     print(f"{key=}, {value_new.keys()=}, {value_new=}, {strict=}")
                     raise e
@@ -117,7 +129,7 @@ class BaseWorkspace:
                     value_new[k.replace("module.", "")] = value[k]
                 else:
                     value_new[k] = value[k]
-            self.__dict__["model"].load_state_dict(value_new, strict=strict)
+            _load_state_dict_compat(self.__dict__["model"], value_new, strict=strict)
 
         for key in include_keys:
             if key in payload["pickles"]:
