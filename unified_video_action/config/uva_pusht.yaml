@@ -30,6 +30,9 @@ training:
   max_val_steps: null
   num_epochs: 3050
   resume: true
+  # Old ckpt without student/align: use resume_strict=false; often skip optimizer state
+  resume_strict: true
+  resume_load_optimizer: true
   rollout_every: 10
   sample_every: 5
   seed: 42

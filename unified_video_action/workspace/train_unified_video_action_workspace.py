@@ -185,7 +185,16 @@ class TrainUnifiedVideoActionWorkspace(BaseWorkspace):
             lastest_ckpt_path = self.get_checkpoint_path()
             if lastest_ckpt_path.is_file():
                 accelerator.print(f"Resuming from checkpoint {lastest_ckpt_path}")
-                self.load_checkpoint(path=lastest_ckpt_path)
+                resume_strict = cfg.training.get("resume_strict", True)
+                resume_load_optimizer = cfg.training.get("resume_load_optimizer", True)
+                exclude_keys = tuple()
+                if not resume_load_optimizer:
+                    exclude_keys = ("optimizer",)
+                self.load_checkpoint(
+                    path=lastest_ckpt_path,
+                    exclude_keys=exclude_keys,
+                    strict=resume_strict,
+                )
 
         # configure ema
         ema: EMAModel = None
