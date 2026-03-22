@@ -1,5 +1,4 @@
 import os
-import sys
 import wandb
 import numpy as np
 import torch
@@ -31,12 +30,9 @@ import robomimic.utils.file_utils as FileUtils
 import robomimic.utils.env_utils as EnvUtils
 import robomimic.utils.obs_utils as ObsUtils
 
-
-current_dir = os.getcwd()
-parent_dir = os.path.abspath(os.path.join(current_dir, ".."))
-libero_path = os.path.join(parent_dir, "LIBERO")
-sys.path.append(libero_path)
-from libero.libero.envs.bddl_base_domain import TASK_MAPPING
+# NOTE: Do not import libero / TASK_MAPPING at module level — it pulls in MuJoCo
+# and can SIGSEGV during "import ... LiberoImageRunner" on headless/GPU clusters.
+# Env registration happens when robomimic creates the env at runtime.
 
 
 def create_env(env_meta, shape_meta, enable_render=True):

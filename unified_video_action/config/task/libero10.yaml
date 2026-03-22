@@ -56,7 +56,8 @@ env_runner:
   fps: 10
   max_steps: 500
   n_action_steps: 8
-  n_envs: null
+  # 1 = single AsyncVectorEnv worker (most stable for MuJoCo/EGL); null = n_train+n_test
+  n_envs: 1
   n_obs_steps: 16
   n_test: 3
   n_test_vis: 1
