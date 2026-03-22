@@ -109,12 +109,18 @@ class LiberoImageRunner(BaseImageRunner):
     ):
         super().__init__(output_dir)
 
+        # Bind under names that are never "import ... as FileUtils" in this function, or Python
+        # treats FileUtils as a local for all of __init__ and raises UnboundLocalError when
+        # _DEFER_LIBERO is false (branch with import never runs).
         if _DEFER_LIBERO:
             import libero.libero.envs.bddl_base_domain  # noqa: F401
-            import robomimic.utils.file_utils as FileUtils
+            import robomimic.utils.file_utils as _file_utils
             from unified_video_action.env.robomimic.robomimic_image_wrapper import (
-                RobomimicImageWrapper,
+                RobomimicImageWrapper as _RobomimicImageWrapper,
             )
+        else:
+            _file_utils = FileUtils
+            _RobomimicImageWrapper = RobomimicImageWrapper
 
         if n_envs is None:
             n_envs = n_train + n_test
@@ -124,7 +130,7 @@ class LiberoImageRunner(BaseImageRunner):
         steps_per_render = max(robosuite_fps // fps, 1)
 
         # read from dataset
-        env_meta = FileUtils.get_env_metadata_from_dataset(dataset_path)
+        env_meta = _file_utils.get_env_metadata_from_dataset(dataset_path)
 
         rotation_transformer = None
         if abs_action:
@@ -140,7 +146,7 @@ class LiberoImageRunner(BaseImageRunner):
             libero_env.env.hard_reset = False
             return MultiStepWrapper(
                 VideoRecordingWrapper(
-                    RobomimicImageWrapper(
+                    _RobomimicImageWrapper(
                         env=libero_env,
                         shape_meta=shape_meta,
                         init_state=None,
@@ -172,7 +178,7 @@ class LiberoImageRunner(BaseImageRunner):
             )
             return MultiStepWrapper(
                 VideoRecordingWrapper(
-                    RobomimicImageWrapper(
+                    _RobomimicImageWrapper(
                         env=libero_env,
                         shape_meta=shape_meta,
                         init_state=None,
@@ -232,7 +238,7 @@ class LiberoImageRunner(BaseImageRunner):
                         env.env.file_path = filename
 
                     # switch to init_state reset
-                    assert isinstance(env.env.env, RobomimicImageWrapper)
+                    assert isinstance(env.env.env, _RobomimicImageWrapper)
                     env.env.env.init_state = init_state
 
                 env_seeds.append(train_idx)
@@ -262,7 +268,7 @@ class LiberoImageRunner(BaseImageRunner):
                     env.env.file_path = filename
 
                 # switch to seed reset
-                assert isinstance(env.env.env, RobomimicImageWrapper)
+                assert isinstance(env.env.env, _RobomimicImageWrapper)
                 env.env.env.init_state = None
                 env.seed(seed)
 
