@@ -48,15 +48,20 @@ from unified_video_action.env_runner.libero_bddl_mapping import bddl_file_name_d
 
 
 def create_env(env_meta, shape_meta, enable_render=True):
+    # Do not `import ... as ObsUtils` only under `if _DEFER_LIBERO` — Python then treats
+    # ObsUtils/EnvUtils as locals for the whole function and raises UnboundLocalError
+    # when _DEFER_LIBERO is false (module-level imports never bind those locals).
     if _DEFER_LIBERO:
-        import robomimic.utils.env_utils as EnvUtils
-        import robomimic.utils.obs_utils as ObsUtils
+        import robomimic.utils.env_utils as _env_utils
+        import robomimic.utils.obs_utils as _obs_utils
+    else:
+        _env_utils, _obs_utils = EnvUtils, ObsUtils
 
     modality_mapping = collections.defaultdict(list)
     for key, attr in shape_meta["obs"].items():
         modality_mapping[attr.get("type", "low_dim")].append(key)
 
-    ObsUtils.initialize_obs_modality_mapping_from_dict(modality_mapping)
+    _obs_utils.initialize_obs_modality_mapping_from_dict(modality_mapping)
 
     if env_meta["bddl_file"] not in bddl_file_name_dict.values():
         print("convert bddl filename")
@@ -69,7 +74,7 @@ def create_env(env_meta, shape_meta, enable_render=True):
         print(env_meta["bddl_file"])
         print(env_meta["env_kwargs"]["bddl_file_name"])
 
-    env = EnvUtils.create_env_from_metadata(
+    env = _env_utils.create_env_from_metadata(
         env_meta=env_meta,
         render=False,
         render_offscreen=enable_render,
