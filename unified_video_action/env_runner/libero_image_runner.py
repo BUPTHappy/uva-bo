@@ -88,6 +88,15 @@ class LiberoImageRunner(BaseImageRunner):
     ):
         super().__init__(output_dir)
 
+        # Libero registers custom robosuite env names (e.g. Libero_Kitchen_Tabletop_Manipulation).
+        # Must run before create_env / get_metadata. Kept out of module-level imports to avoid
+        # SIGSEGV on plain `import LiberoImageRunner` on some clusters.
+        import libero.libero.envs.bddl_base_domain  # noqa: F401
+        try:
+            import libero.libero.envs.problems  # noqa: F401
+        except ImportError:
+            pass
+
         # Heavy deps: robomimic → EnvRobosuite → robosuite/MuJoCo (see module docstring).
         import robomimic.utils.file_utils as FileUtils
         from unified_video_action.env.robomimic.robomimic_image_wrapper import (
