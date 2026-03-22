@@ -1,5 +1,28 @@
 import os
 import wandb
+
+# Default (unset / 0): original imports — LIBERO on sys.path + TASK_MAPPING registers envs;
+# robomimic + RobomimicImageWrapper at module level (matches older uva-bo behavior).
+# Set UVA_DEFER_LIBERO=1 only on clusters where `import LiberoImageRunner` must not load
+# MuJoCo/robosuite at import time (then bddl_base_domain is imported in __init__ instead).
+_DEFER_LIBERO = os.environ.get("UVA_DEFER_LIBERO", "0") == "1"
+
+if not _DEFER_LIBERO:
+    import sys
+
+    _current_dir = os.getcwd()
+    _parent_dir = os.path.abspath(os.path.join(_current_dir, ".."))
+    _libero_path = os.path.join(_parent_dir, "LIBERO")
+    sys.path.append(_libero_path)
+    from libero.libero.envs.bddl_base_domain import TASK_MAPPING  # noqa: F401
+
+    from unified_video_action.env.robomimic.robomimic_image_wrapper import (
+        RobomimicImageWrapper,
+    )
+
+    import robomimic.utils.file_utils as FileUtils
+    import robomimic.utils.env_utils as EnvUtils
+    import robomimic.utils.obs_utils as ObsUtils
 import numpy as np
 import torch
 import collections
@@ -22,15 +45,11 @@ from unified_video_action.env_runner.base_image_runner import BaseImageRunner
 
 from unified_video_action.env_runner.libero_bddl_mapping import bddl_file_name_dict
 
-# NOTE: Do not import robomimic / RobomimicImageWrapper / EnvRobosuite at module level.
-# `from robomimic.envs.env_robosuite import EnvRobosuite` loads robosuite+Mujoco and
-# often SIGSEGVs during plain `import LiberoImageRunner` on headless clusters.
-# Imports are deferred to create_env() and LiberoImageRunner.__init__().
-
 
 def create_env(env_meta, shape_meta, enable_render=True):
-    import robomimic.utils.env_utils as EnvUtils
-    import robomimic.utils.obs_utils as ObsUtils
+    if _DEFER_LIBERO:
+        import robomimic.utils.env_utils as EnvUtils
+        import robomimic.utils.obs_utils as ObsUtils
 
     modality_mapping = collections.defaultdict(list)
     for key, attr in shape_meta["obs"].items():
@@ -88,16 +107,12 @@ class LiberoImageRunner(BaseImageRunner):
     ):
         super().__init__(output_dir)
 
-        # Libero registers custom robosuite env names via bddl_base_domain import side effects.
-        # Do NOT import libero.libero.envs.problems here — it loads all scene classes and often
-        # SIGSEGVs on headless clusters (segfault is not catchable with try/except).
-        import libero.libero.envs.bddl_base_domain  # noqa: F401
-
-        # Heavy deps: robomimic → EnvRobosuite → robosuite/MuJoCo (see module docstring).
-        import robomimic.utils.file_utils as FileUtils
-        from unified_video_action.env.robomimic.robomimic_image_wrapper import (
-            RobomimicImageWrapper,
-        )
+        if _DEFER_LIBERO:
+            import libero.libero.envs.bddl_base_domain  # noqa: F401
+            import robomimic.utils.file_utils as FileUtils
+            from unified_video_action.env.robomimic.robomimic_image_wrapper import (
+                RobomimicImageWrapper,
+            )
 
         if n_envs is None:
             n_envs = n_train + n_test
