@@ -30,6 +30,9 @@ training:
   max_val_steps: null
   num_epochs: 3050
   resume: true
+  # Must exist in config for Hydra struct overrides; relax if ckpt keys differ
+  resume_strict: true
+  resume_load_optimizer: true
   rollout_every: 50
   sample_every: 5
   seed: 42
