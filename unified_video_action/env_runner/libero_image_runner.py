@@ -88,14 +88,10 @@ class LiberoImageRunner(BaseImageRunner):
     ):
         super().__init__(output_dir)
 
-        # Libero registers custom robosuite env names (e.g. Libero_Kitchen_Tabletop_Manipulation).
-        # Must run before create_env / get_metadata. Kept out of module-level imports to avoid
-        # SIGSEGV on plain `import LiberoImageRunner` on some clusters.
+        # Libero registers custom robosuite env names via bddl_base_domain import side effects.
+        # Do NOT import libero.libero.envs.problems here — it loads all scene classes and often
+        # SIGSEGVs on headless clusters (segfault is not catchable with try/except).
         import libero.libero.envs.bddl_base_domain  # noqa: F401
-        try:
-            import libero.libero.envs.problems  # noqa: F401
-        except ImportError:
-            pass
 
         # Heavy deps: robomimic → EnvRobosuite → robosuite/MuJoCo (see module docstring).
         import robomimic.utils.file_utils as FileUtils
