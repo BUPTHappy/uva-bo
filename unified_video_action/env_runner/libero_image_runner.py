@@ -33,6 +33,7 @@ import math
 import dill
 import wandb.sdk.data_types.video as wv
 from unified_video_action.gym_util.async_vector_env import AsyncVectorEnv
+from unified_video_action.gym_util.sync_vector_env import SyncVectorEnv
 from unified_video_action.gym_util.multistep_wrapper import MultiStepWrapper
 from unified_video_action.gym_util.video_recording_wrapper import (
     VideoRecordingWrapper,
@@ -104,6 +105,7 @@ class LiberoImageRunner(BaseImageRunner):
         abs_action=False,
         tqdm_interval_sec=5.0,
         n_envs=None,
+        use_sync_vector_env=False,
     ):
         super().__init__(output_dir)
 
@@ -193,6 +195,15 @@ class LiberoImageRunner(BaseImageRunner):
             )
 
         env_fns = [env_fn] * n_envs
+        # AsyncVectorEnv always uses worker processes (pipes); workers often SIGSEGV (MuJoCo/EGL)
+        # and the parent then sees BrokenPipeError. SyncVectorEnv runs envs in the training
+        # process — no pipes — at the cost of one GL context per env in this process.
+        if use_sync_vector_env:
+            env = SyncVectorEnv(env_fns, copy=True)
+        else:
+            env = AsyncVectorEnv(
+                env_fns, dummy_env_fn=dummy_env_fn, shared_memory=False
+            )
         env_seeds = list()
         env_prefixs = list()
         env_init_fn_dills = list()
@@ -258,8 +269,6 @@ class LiberoImageRunner(BaseImageRunner):
             env_seeds.append(seed)
             env_prefixs.append("test/%s_" % env_meta["bddl_file"].split("/")[-1][:-5])
             env_init_fn_dills.append(dill.dumps(init_fn))
-
-        env = AsyncVectorEnv(env_fns, dummy_env_fn=dummy_env_fn, shared_memory=False)
 
         self.env_meta = env_meta
         self.env = env

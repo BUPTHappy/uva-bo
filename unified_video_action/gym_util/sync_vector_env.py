@@ -58,7 +58,11 @@ class SyncVectorEnv(VectorEnv):
         for env, seed in zip(self.envs, seeds):
             env.seed(seed)
 
-    def reset_wait(self):
+    def reset_async(self, seed=None, options=None):
+        """VectorEnv API: no-op before reset_wait (sync reset runs entirely in reset_wait)."""
+        pass
+
+    def reset_wait(self, timeout=None):
         self._dones[:] = False
         observations = []
         for env in self.envs:

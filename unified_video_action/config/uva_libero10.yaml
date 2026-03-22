@@ -33,6 +33,14 @@ training:
   # Must exist in config for Hydra struct overrides; relax if ckpt keys differ
   resume_strict: true
   resume_load_optimizer: true
+  # true = do not load Libero sim during training (use eval_sim.py on 1 GPU instead)
+  skip_rollout: false
+  # Multi-GPU + MuJoCo/EGL often SIGSEGV in-process; set true to run eval_sim.py in a
+  # subprocess after each checkpoint (see rollout_subprocess_cuda_visible_devices).
+  rollout_subprocess: false
+  rollout_subprocess_device: cuda:0
+  # Subprocess only sees this GPU (e.g. pick an idle GPU; "0" re-maps to cuda:0 in that process)
+  rollout_subprocess_cuda_visible_devices: "0"
   rollout_every: 50
   sample_every: 5
   seed: 42

@@ -86,6 +86,12 @@ class BaseWorkspace:
 
         return str(path.absolute())
 
+    def wait_for_checkpoint_save(self):
+        """Join the async checkpoint writer thread started by save_checkpoint(use_thread=True)."""
+        if getattr(self, "_saving_thread", None) is not None:
+            self._saving_thread.join()
+            self._saving_thread = None
+
     def get_checkpoint_path(self, tag="latest"):
         return pathlib.Path(self.output_dir).joinpath("checkpoints", f"{tag}.ckpt")
 

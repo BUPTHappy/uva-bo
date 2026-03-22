@@ -8,6 +8,8 @@ if __name__ == "__main__":
     os.chdir(ROOT_DIR)
 
 import os
+import sys
+import subprocess
 import hydra
 import torch
 from omegaconf import OmegaConf
@@ -36,6 +38,46 @@ from unified_video_action.eval.eval import test_video_fvd, test_action_l2
 from unified_video_action.utils.data_utils import resize_image
 
 OmegaConf.register_new_resolver("eval", eval, replace=True)
+
+
+def _run_rollout_subprocess_eval(cfg: OmegaConf, output_dir: str, epoch: int, checkpoint_path: str):
+    """
+    Run eval_sim.py in a new process with a restricted CUDA_VISIBLE_DEVICES.
+    Avoids MuJoCo/EGL SIGSEGV from running the simulator inside the same process as DDP/DeepSpeed.
+    """
+    repo_root = pathlib.Path(__file__).resolve().parent.parent.parent
+    eval_script = repo_root / "eval_sim.py"
+    if not eval_script.is_file():
+        raise FileNotFoundError(f"eval_sim.py not found at {eval_script}")
+
+    eval_out = os.path.join(
+        output_dir,
+        "rollout_subprocess_eval",
+        f"epoch_{epoch:04d}",
+    )
+    os.makedirs(eval_out, exist_ok=True)
+
+    cuda_visible = cfg.training.get("rollout_subprocess_cuda_visible_devices", None)
+    device = cfg.training.get("rollout_subprocess_device", "cuda:0")
+
+    env = os.environ.copy()
+    if cuda_visible is not None:
+        env["CUDA_VISIBLE_DEVICES"] = str(cuda_visible)
+
+    cmd = [
+        sys.executable,
+        str(eval_script),
+        "-c",
+        str(checkpoint_path),
+        "-o",
+        eval_out,
+        "-d",
+        device,
+    ]
+    print(f"[rollout_subprocess] Running: {' '.join(cmd)}", flush=True)
+    r = subprocess.run(cmd, cwd=str(repo_root), env=env)
+    if r.returncode != 0:
+        print(f"[rollout_subprocess] eval_sim exited with code {r.returncode}", flush=True)
 
 
 class TrainUnifiedVideoActionWorkspace(BaseWorkspace):
@@ -202,10 +244,17 @@ class TrainUnifiedVideoActionWorkspace(BaseWorkspace):
             ema = hydra.utils.instantiate(cfg.ema, model=self.ema_model)
 
         # configure env (Libero/MuJoCo + EGL offscreen: only safe on main process;
-        # all ranks loading sims causes SIGSEGV under multi-GPU accelerate)
+        # all ranks loading sims causes SIGSEGV under multi-GPU accelerate).
+        # Set training.skip_rollout=true to skip sim entirely during training and run
+        # eval separately (e.g. single-GPU: python eval_sim.py -c ...).
+        # rollout_subprocess=true also skips in-process sim and runs eval_sim.py in a
+        # subprocess after checkpoint (single visible GPU via rollout_subprocess_cuda_visible_devices).
+        rollout_subprocess = cfg.training.get("rollout_subprocess", False)
+        skip_rollout = cfg.training.get("skip_rollout", False) or rollout_subprocess
         env_runners = None
         if (
-            cfg.model.policy.action_model_params.predict_action
+            not skip_rollout
+            and cfg.model.policy.action_model_params.predict_action
             and "env_runner" in cfg.task
         ):
             if accelerator.is_main_process:
@@ -418,7 +467,8 @@ class TrainUnifiedVideoActionWorkspace(BaseWorkspace):
 
             # ========= simulator: run rollout =========
             if (
-                cfg.model.policy.action_model_params.predict_action
+                not skip_rollout
+                and cfg.model.policy.action_model_params.predict_action
                 and "env_runner" in cfg.task
             ):
                 if (self.epoch % cfg.training.rollout_every) == 0:
@@ -454,6 +504,36 @@ class TrainUnifiedVideoActionWorkspace(BaseWorkspace):
 
                 # recover the DDP model
                 self.model = model_ddp
+
+            # ========= subprocess Libero rollout (single GPU, separate process) =========
+            if (
+                rollout_subprocess
+                and accelerator.is_main_process
+                and (self.epoch % cfg.training.rollout_every) == 0
+                and cfg.model.policy.action_model_params.predict_action
+                and "env_runner" in cfg.task
+            ):
+                if (self.epoch % cfg.training.checkpoint_every) != 0:
+                    print(
+                        "[rollout_subprocess] skip eval this epoch: no checkpoint written "
+                        "(align training.checkpoint_every with training.rollout_every, e.g. both 50).",
+                        flush=True,
+                    )
+                else:
+                    self.wait_for_checkpoint_save()
+                    ckpt_path = self.get_checkpoint_path("latest")
+                    if not ckpt_path.is_file():
+                        print(
+                            f"[rollout_subprocess] missing {ckpt_path}, skip eval.",
+                            flush=True,
+                        )
+                    else:
+                        _run_rollout_subprocess_eval(
+                            cfg,
+                            self.output_dir,
+                            self.epoch,
+                            str(ckpt_path),
+                        )
 
             # ========= eval end for this epoch ==========
             policy.train()
