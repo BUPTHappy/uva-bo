@@ -201,12 +201,16 @@ class TrainUnifiedVideoActionWorkspace(BaseWorkspace):
         if cfg.training.use_ema:
             ema = hydra.utils.instantiate(cfg.ema, model=self.ema_model)
 
-        # configure env
+        # configure env (Libero/MuJoCo + EGL offscreen: only safe on main process;
+        # all ranks loading sims causes SIGSEGV under multi-GPU accelerate)
+        env_runners = None
         if (
             cfg.model.policy.action_model_params.predict_action
             and "env_runner" in cfg.task
         ):
-            env_runners = load_env_runner(cfg, self.output_dir)
+            if accelerator.is_main_process:
+                env_runners = load_env_runner(cfg, self.output_dir)
+        accelerator.wait_for_everyone()
 
         # configure checkpoint
         topk_manager = TopKCheckpointManager(
@@ -418,8 +422,9 @@ class TrainUnifiedVideoActionWorkspace(BaseWorkspace):
                 and "env_runner" in cfg.task
             ):
                 if (self.epoch % cfg.training.rollout_every) == 0:
-                    runner_log = env_rollout(cfg, env_runners, policy)
-                    step_log.update(runner_log)
+                    if env_runners is not None:
+                        runner_log = env_rollout(cfg, env_runners, policy)
+                        step_log.update(runner_log)
 
             # ========= checkpoint =========
             if (
