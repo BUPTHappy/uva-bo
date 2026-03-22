@@ -20,22 +20,18 @@ from unified_video_action.policy.base_image_policy import BaseImagePolicy
 from unified_video_action.common.pytorch_util import dict_apply
 from unified_video_action.env_runner.base_image_runner import BaseImageRunner
 
-## here we just use the same env wrapper as robomimic
-from unified_video_action.env.robomimic.robomimic_image_wrapper import (
-    RobomimicImageWrapper,
-)
 from unified_video_action.env_runner.libero_bddl_mapping import bddl_file_name_dict
 
-import robomimic.utils.file_utils as FileUtils
-import robomimic.utils.env_utils as EnvUtils
-import robomimic.utils.obs_utils as ObsUtils
-
-# NOTE: Do not import libero / TASK_MAPPING at module level — it pulls in MuJoCo
-# and can SIGSEGV during "import ... LiberoImageRunner" on headless/GPU clusters.
-# Env registration happens when robomimic creates the env at runtime.
+# NOTE: Do not import robomimic / RobomimicImageWrapper / EnvRobosuite at module level.
+# `from robomimic.envs.env_robosuite import EnvRobosuite` loads robosuite+Mujoco and
+# often SIGSEGVs during plain `import LiberoImageRunner` on headless clusters.
+# Imports are deferred to create_env() and LiberoImageRunner.__init__().
 
 
 def create_env(env_meta, shape_meta, enable_render=True):
+    import robomimic.utils.env_utils as EnvUtils
+    import robomimic.utils.obs_utils as ObsUtils
+
     modality_mapping = collections.defaultdict(list)
     for key, attr in shape_meta["obs"].items():
         modality_mapping[attr.get("type", "low_dim")].append(key)
@@ -91,6 +87,12 @@ class LiberoImageRunner(BaseImageRunner):
         n_envs=None,
     ):
         super().__init__(output_dir)
+
+        # Heavy deps: robomimic → EnvRobosuite → robosuite/MuJoCo (see module docstring).
+        import robomimic.utils.file_utils as FileUtils
+        from unified_video_action.env.robomimic.robomimic_image_wrapper import (
+            RobomimicImageWrapper,
+        )
 
         if n_envs is None:
             n_envs = n_train + n_test
