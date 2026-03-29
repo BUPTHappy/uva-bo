@@ -13,7 +13,7 @@ policy:
   predict_proprioception: null
   shape_meta: ${task.shape_meta}
 
-  # =========================== new: student tokenizer ===========================
+  # ==== new: student tokenizer ======
   use_student_tokenizer: true
   student_tokenizer_params:
     img_size: 256
@@ -26,11 +26,14 @@ policy:
     mlp_ratio: 4.0
     dropout: 0.0
 
-  # =========================== new: REPA-style alignment controls ===========================
+  # === new: REPA-style alignment controls ======
   align_params:
     enable: true
     coeff: 0.1
     warmup_steps: 5000
+    # If true: align MAR MAE decoder output (conditioning to DiffLoss) to frozen VAE latents of x_img.
+    # If false: align student tokenizer patch features to VAE (legacy).
+    after_transformer: false
     loss_type: cosine
     use_projector: true
     projector_dim: 512

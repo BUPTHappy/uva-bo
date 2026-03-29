@@ -77,6 +77,8 @@ class UnifiedVideoActionPolicy(BaseImagePolicy):
         self.align_debug = False
         self.align_debug_every = 200
         self._align_step = 0
+        # Align student to VAE after MAR encoder+decoder, on the latent fed to DiffLoss (before diffusion head).
+        self.align_after_transformer = False
 
         if self.align_params is not None:
             self.use_alignment = bool(self.align_params.get("enable", False))
@@ -87,6 +89,9 @@ class UnifiedVideoActionPolicy(BaseImagePolicy):
             self.align_teacher_use_mode = bool(self.align_params.get("teacher_use_mode", True))
             self.align_debug = bool(self.align_params.get("debug", False))
             self.align_debug_every = int(self.align_params.get("debug_every", 200))
+            self.align_after_transformer = bool(
+                self.align_params.get("after_transformer", False)
+            )
 
         # =========================== load vae model (teacher / legacy path) ===========================
         with torch.no_grad():
@@ -103,22 +108,6 @@ class UnifiedVideoActionPolicy(BaseImagePolicy):
                     "use_student_tokenizer=True but student_tokenizer_params is not provided."
                 )
             self.student_tokenizer = StudentLatentTokenizer(**self.student_tokenizer_params)
-
-            if self.use_alignment and self.align_use_projector:
-                latent_channels = int(
-                    self.student_tokenizer_params.get(
-                        "latent_channels", autoregressive_model_params.vae_embed_dim
-                    )
-                )
-                hidden_dim = int(self.student_tokenizer_params.get("hidden_dim", 256))
-                projector_dim = int(self.align_params.get("projector_dim", 512))
-                self.align_projector = torch.nn.Sequential(
-                    torch.nn.Linear(hidden_dim, projector_dim),
-                    torch.nn.SiLU(),
-                    torch.nn.Linear(projector_dim, projector_dim),
-                    torch.nn.SiLU(),
-                    torch.nn.Linear(projector_dim, latent_channels),
-                )
 
         # =========================== load language model ===========================
         self.text_model, self.tokenizer, self.max_length = get_text_model(
@@ -170,6 +159,33 @@ class UnifiedVideoActionPolicy(BaseImagePolicy):
                 print("pretrained model not found: ", self.pretrained_model_path)
 
         self.normalizer = LinearNormalizer()
+
+        # REPA projector: tokenizer hidden (pre-transformer) or MAR decoder dim (post-MAE, pre-diffusion)
+        if self.use_alignment and self.align_use_projector:
+            if self.align_after_transformer:
+                if not self.use_student_tokenizer:
+                    raise ValueError(
+                        "align_params.after_transformer=True requires use_student_tokenizer=True."
+                    )
+                align_in_dim = int(self.model.decoder_embed.out_features)
+            elif self.use_student_tokenizer:
+                align_in_dim = int(self.student_tokenizer_params.get("hidden_dim", 256))
+            else:
+                align_in_dim = None
+            if align_in_dim is not None:
+                latent_channels = int(
+                    self.student_tokenizer_params.get(
+                        "latent_channels", autoregressive_model_params.vae_embed_dim
+                    )
+                )
+                projector_dim = int(self.align_params.get("projector_dim", 512))
+                self.align_projector = torch.nn.Sequential(
+                    torch.nn.Linear(align_in_dim, projector_dim),
+                    torch.nn.SiLU(),
+                    torch.nn.Linear(projector_dim, projector_dim),
+                    torch.nn.SiLU(),
+                    torch.nn.Linear(projector_dim, latent_channels),
+                )
 
         if self.selected_training_mode is None:
             if len(self.task_modes) == 0:
@@ -472,10 +488,7 @@ class UnifiedVideoActionPolicy(BaseImagePolicy):
         teacher_tokens: torch.Tensor,
         return_metrics: bool = False,
     ):
-        """
-        student_tokens: [B, T, S, D_s] (from student tokenizer hidden features)
-        teacher_tokens: [B, T, S, D_t] (from VAE latent tokens)
-        """
+
         student_raw = student_tokens
         if self.align_projector is not None:
             student_tokens = self.align_projector(student_tokens)
@@ -573,7 +586,7 @@ class UnifiedVideoActionPolicy(BaseImagePolicy):
                     pred_second_image_z, _ = self._encode_student_latent(proprioception_input["pred_second_image"])
                     proprioception_input["pred_second_image_z"] = pred_second_image_z
 
-            if self.use_alignment:
+            if self.use_alignment and not self.align_after_transformer:
                 teacher_z = self._extract_teacher_latent(x_img)
                 teacher_c = self._extract_teacher_latent(c_img)
 
@@ -631,7 +644,12 @@ class UnifiedVideoActionPolicy(BaseImagePolicy):
 
         selected_mode = random.choice(self.task_modes)
 
-        loss, video_loss, act_loss = self.model(
+        return_decoder_hidden = (
+            self.use_student_tokenizer
+            and self.use_alignment
+            and self.align_after_transformer
+        )
+        out = self.model(
             z,
             c,
             history_trajectory,
@@ -639,10 +657,46 @@ class UnifiedVideoActionPolicy(BaseImagePolicy):
             text_latents,
             task_mode=selected_mode,
             proprioception_input=proprioception_input,
+            return_decoder_hidden=return_decoder_hidden,
         )
+        if return_decoder_hidden:
+            loss, video_loss, act_loss, z_pre_diff = out
+        else:
+            loss, video_loss, act_loss = out
+            z_pre_diff = None
+
+        if self.use_student_tokenizer and self.use_alignment and self.align_after_transformer:
+            teacher_z = self._extract_teacher_latent(x_img)
+            teacher_z_tokens = self._latent_to_tokens(teacher_z)
+            nf, sl = self.model.n_frames, self.model.seq_len
+            z_bt = z_pre_diff.view(B, nf, sl, -1)
+            assert z_bt.shape[:3] == teacher_z_tokens.shape[:3], (
+                z_bt.shape,
+                teacher_z_tokens.shape,
+            )
+            align_loss, align_metrics_z = self._compute_alignment_loss(
+                z_bt, teacher_z_tokens, return_metrics=True
+            )
+            align_cos = align_metrics_z["cosine"]
+            align_student_norm = align_metrics_z["student_norm"]
+            align_teacher_norm = align_metrics_z["teacher_norm"]
+            if (
+                self.align_debug
+                and self.training
+                and (self._align_step % max(1, self.align_debug_every) == 0)
+            ):
+                print(
+                    "[ALIGN DEBUG] after_mae_decoder "
+                    f"step={self._align_step} "
+                    f"z_pre_diff={tuple(z_pre_diff.shape)} teacher_z={tuple(teacher_z_tokens.shape)} "
+                    f"loss={align_loss.item():.6f} cos={align_cos.item():.6f} "
+                    f"s_norm={align_student_norm.item():.6f} t_norm={align_teacher_norm.item():.6f} "
+                    f"s_std={align_metrics_z['student_std']:.6f} "
+                    f"t_std={align_metrics_z['teacher_std']:.6f}"
+                )
 
         if self.use_student_tokenizer and self.use_alignment:
-            coeff = self._get_align_coeff()
+            coeff = self._get_align_coeff() #set as 0.5
             loss = loss + coeff * align_loss
             align_coeff_value = torch.tensor(coeff, device=x.device, dtype=align_loss.dtype)
             if self.training:

@@ -795,6 +795,7 @@ class MAR(nn.Module):
         text_latents=None,
         task_mode=None,
         proprioception_input={},
+        return_decoder_hidden=False,
     ):
         self.device = cond.device
         B, T, C, H, W = imgs.size()
@@ -940,6 +941,8 @@ class MAR(nn.Module):
                     text_latents=text_latents,
                 )
 
+        if return_decoder_hidden:
+            return loss, video_loss, act_loss, z
         return loss, video_loss, act_loss
 
     def sample_tokens(
