@@ -131,9 +131,6 @@ def main() -> None:
     print(f"  Decoder:   {n_vae_decoder:>14,}  ({n_vae_decoder / 1e6:.3f} M)")
     print(f"  Full VAE:  {n_vae_total:>14,}  ({n_vae_total / 1e6:.3f} M)")
     print()
-    print("Ratios (student / …)")
-    print(f"  vs VAE encode stack: {ratio_vs_encode:.4f}x")
-    print(f"  vs full VAE:         {ratio_vs_full:.4f}x")
     print("=" * 72)
 
 
