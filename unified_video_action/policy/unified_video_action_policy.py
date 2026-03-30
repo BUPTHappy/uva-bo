@@ -77,7 +77,6 @@ class UnifiedVideoActionPolicy(BaseImagePolicy):
         self.align_debug = False
         self.align_debug_every = 200
         self._align_step = 0
-        # Align student to VAE after MAR encoder+decoder, on the latent fed to DiffLoss (before diffusion head).
         self.align_after_transformer = False
 
         if self.align_params is not None:
