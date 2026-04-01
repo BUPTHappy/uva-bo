@@ -272,6 +272,7 @@ def test_action_l2(
     plot_actions=False,
 ):
     action_l2_distances = []
+    losses = dict()
 
     with torch.no_grad():
         for n, batch in enumerate(loader):
