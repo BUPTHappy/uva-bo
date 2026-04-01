@@ -25,6 +25,7 @@ from unified_video_action.utils.data_utils import (
     decode_from_sample_autoregressive,
 )
 from unified_video_action.utils.language_model import extract_text_features
+import pytorch3d.transforms as pt
 
 
 
@@ -343,6 +344,39 @@ def test_action_l2(
                 )
                 action_l2_distances.append(l2_distance.mean())
 
+                # Additional UMI-specific offline metrics.
+                # UMI action is pose10d: [xyz(3), rot6d(6), gripper(1)] in relative pose repr.
+                if "umi" in cfg.task.name and act_out.size(-1) >= 9:
+                    gt_pos = trajectory[:, :, :3]
+                    pred_pos = act_out[:, :, :3]
+                    pos_err = torch.linalg.norm(gt_pos - pred_pos, dim=-1)  # [B, T]
+
+                    gt_rot6d = trajectory[:, :, 3:9]
+                    pred_rot6d = act_out[:, :, 3:9]
+                    gt_R = pt.rotation_6d_to_matrix(gt_rot6d.reshape(-1, 6))
+                    pred_R = pt.rotation_6d_to_matrix(pred_rot6d.reshape(-1, 6))
+                    # returns angle in radians, [B*T]
+                    rot_err = pt.so3_relative_angle(gt_R, pred_R, eps=1e-6).reshape(
+                        gt_pos.size(0), gt_pos.size(1)
+                    )
+
+                    if "umi_pos_err" not in losses:
+                        losses["umi_pos_err"] = AverageMeter()
+                        losses["umi_rot_err_rad"] = AverageMeter()
+                        losses["umi_final_pos_dist"] = AverageMeter()
+                        losses["umi_final_rot_err_rad"] = AverageMeter()
+
+                    losses["umi_pos_err"].update(pos_err.mean().item(), gt_pos.size(0))
+                    losses["umi_rot_err_rad"].update(
+                        rot_err.mean().item(), gt_pos.size(0)
+                    )
+                    losses["umi_final_pos_dist"].update(
+                        pos_err[:, -1].mean().item(), gt_pos.size(0)
+                    )
+                    losses["umi_final_rot_err_rad"].update(
+                        rot_err[:, -1].mean().item(), gt_pos.size(0)
+                    )
+
             if cfg.training.debug:
                 break
 
@@ -351,5 +385,16 @@ def test_action_l2(
         log_data[f"{name_label}val_action_l2_distances"] = (
             torch.stack(action_l2_distances).mean().item()
         )
+        if "umi" in cfg.task.name and "umi_pos_err" in losses:
+            log_data[f"{name_label}val_umi_eef_pos_l2"] = losses["umi_pos_err"].avg
+            log_data[f"{name_label}val_umi_eef_rot_err_rad"] = losses[
+                "umi_rot_err_rad"
+            ].avg
+            log_data[f"{name_label}val_umi_final_pos_dist"] = losses[
+                "umi_final_pos_dist"
+            ].avg
+            log_data[f"{name_label}val_umi_final_rot_err_rad"] = losses[
+                "umi_final_rot_err_rad"
+            ].avg
 
     return log_data
