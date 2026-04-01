@@ -620,6 +620,10 @@ class MAR(nn.Module):
         # ========= Language Embedding =========
         if self.language_emb_model == "clip":
             if self.language_emb_model_type == 1:
+                if text_latents is None:
+                    # Allow running without language conditioning at eval time.
+                    # Use the learned null / fake latent as unconditional input.
+                    text_latents = self.fake_latent.repeat(B, 1)
                 text_latents = text_latents.unsqueeze(1).repeat(
                     1, self.buffer_size_text, 1
                 )
