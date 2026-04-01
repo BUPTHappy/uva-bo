@@ -1,4 +1,5 @@
 import os
+import pathlib
 import wandb
 
 # Default (unset / 0): original imports — LIBERO on sys.path + TASK_MAPPING registers envs;
@@ -10,10 +11,27 @@ _DEFER_LIBERO = os.environ.get("UVA_DEFER_LIBERO", "0") == "1"
 if not _DEFER_LIBERO:
     import sys
 
-    _current_dir = os.getcwd()
-    _parent_dir = os.path.abspath(os.path.join(_current_dir, ".."))
-    _libero_path = os.path.join(_parent_dir, "LIBERO")
-    sys.path.append(_libero_path)
+    # Be robust to Hydra changing CWD (hydra.run.dir). Prefer resolving LIBERO relative
+    # to this repository; fall back to historical "../LIBERO" relative to CWD.
+    _this_file = pathlib.Path(__file__).resolve()
+    _repo_root = _this_file.parents[2]
+    _candidate_paths = [
+        _repo_root / "LIBERO",         # e.g. repo_root/LIBERO
+        _repo_root.parent / "LIBERO",  # e.g. ../LIBERO (old layout)
+        pathlib.Path(os.getcwd()).resolve().parent / "LIBERO",  # legacy CWD-based fallback
+    ]
+    _libero_path = None
+    for _p in _candidate_paths:
+        if _p.exists():
+            _libero_path = str(_p)
+            break
+    if _libero_path is not None and _libero_path not in sys.path:
+        sys.path.append(_libero_path)
+    else:
+        print(
+            "[LiberoImageRunner] WARNING: Could not find 'LIBERO' directory. "
+            "If you have it elsewhere, add it to PYTHONPATH."
+        )
     from libero.libero.envs.bddl_base_domain import TASK_MAPPING  # noqa: F401
 
     from unified_video_action.env.robomimic.robomimic_image_wrapper import (
