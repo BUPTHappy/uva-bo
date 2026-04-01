@@ -21,7 +21,12 @@ from unified_video_action.utils.load_env import load_env_runner
 @click.option("-c", "--checkpoint", required=True)
 @click.option("-o", "--output_dir", required=True)
 @click.option("-d", "--device", default="cuda:0")
-def main(checkpoint, output_dir, device):
+@click.option(
+    "--disable_vae_cond_eval/--no-disable_vae_cond_eval",
+    default=False,
+    help="Eval-only: remove VAE conditioning frames by feeding a zero latent.",
+)
+def main(checkpoint, output_dir, device, disable_vae_cond_eval):
 
     pathlib.Path(output_dir).mkdir(parents=True, exist_ok=True)
 
@@ -37,6 +42,8 @@ def main(checkpoint, output_dir, device):
 
     with open_dict(cfg):
         cfg.output_dir = output_dir
+        # click flag override (checkpoint cfg is loaded from disk)
+        cfg.model.policy.disable_vae_cond_eval = bool(disable_vae_cond_eval)
         
     # configure workspace
     cls = hydra.utils.get_class(cfg.model._target_)
