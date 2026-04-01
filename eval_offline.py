@@ -40,7 +40,40 @@ from unified_video_action.dataset.base_dataset import BaseImageDataset
     type=int,
     help="Optional cap on number of val batches.",
 )
-def main(checkpoint, output_dir, device, disable_vae_cond_eval, max_batches):
+@click.option(
+    "--umi_dataset_root_dir",
+    default=None,
+    type=str,
+    help="Override cfg.task.dataset.dataset_root_dir for UMI multi-dataset eval.",
+)
+@click.option(
+    "--umi_used_episode_indices_file",
+    default=None,
+    type=str,
+    help=(
+        "Override cfg.task.dataset.used_episode_indices_file. "
+        "Use empty string '' to disable."
+    ),
+)
+@click.option(
+    "--umi_dataset_names",
+    default=None,
+    type=str,
+    help=(
+        "Optional comma-separated dataset names to eval (overrides cfg.task.dataset.dataset_configs keys). "
+        "Example: 'cup_arrangement_0,cloth_folding_0,dish_washing_0,dynamic_tossing_0'."
+    ),
+)
+def main(
+    checkpoint,
+    output_dir,
+    device,
+    disable_vae_cond_eval,
+    max_batches,
+    umi_dataset_root_dir,
+    umi_used_episode_indices_file,
+    umi_dataset_names,
+):
     pathlib.Path(output_dir).mkdir(parents=True, exist_ok=True)
 
     payload = torch.load(open(checkpoint, "rb"), map_location="cpu", pickle_module=dill)
@@ -57,6 +90,19 @@ def main(checkpoint, output_dir, device, disable_vae_cond_eval, max_batches):
 
         if max_batches is not None:
             cfg.training.max_val_steps = int(max_batches)
+
+        # UMI multi-dataset overrides (ckpt may contain cluster-specific paths).
+        if getattr(cfg, "task", None) is not None and cfg.task.task_type == "multiple_datasets":
+            if umi_dataset_root_dir is not None:
+                cfg.task.dataset.dataset_root_dir = umi_dataset_root_dir
+            if umi_used_episode_indices_file is not None:
+                # allow disabling by passing ''
+                cfg.task.dataset.used_episode_indices_file = umi_used_episode_indices_file
+            if umi_dataset_names is not None:
+                names = [n.strip() for n in umi_dataset_names.split(",") if n.strip()]
+                cfg.task.dataset.dataset_configs = {
+                    n: {"include_episode_num": -1, "mask_mirror": False} for n in names
+                }
 
     cls = hydra.utils.get_class(cfg.model._target_)
     workspace = cls(cfg, output_dir=output_dir)
