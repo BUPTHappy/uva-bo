@@ -390,15 +390,15 @@ def test_action_l2(
             torch.stack(action_l2_distances).mean().item()
         )
         if "umi" in cfg.task.name and "umi_pos_err" in losses:
-            log_data[f"{name_label}val_umi_eef_pos_l2"] = losses["umi_pos_err"].avg
+            log_data[f"{name_label}val_umi_eef_pos_l2"] = losses["umi_pos_err"].average
             log_data[f"{name_label}val_umi_eef_rot_err_rad"] = losses[
                 "umi_rot_err_rad"
-            ].avg
+            ].average
             log_data[f"{name_label}val_umi_final_pos_dist"] = losses[
                 "umi_final_pos_dist"
-            ].avg
+            ].average
             log_data[f"{name_label}val_umi_final_rot_err_rad"] = losses[
                 "umi_final_rot_err_rad"
-            ].avg
+            ].average
 
     return log_data
