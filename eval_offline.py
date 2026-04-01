@@ -130,6 +130,13 @@ def main(
     policy.to(device)
     policy.eval()
 
+    # After checkpoint is loaded, it's safe to disable dataset-side language
+    # conditioning without changing the model structure.
+    if disable_language and getattr(cfg, "task", None) is not None:
+        with open_dict(cfg):
+            if hasattr(cfg.task, "dataset") and hasattr(cfg.task.dataset, "language_emb_model"):
+                cfg.task.dataset.language_emb_model = None
+
     # Build val dataloader (match training workspace behavior).
     if cfg.task.task_type == "multiple_datasets":
         dataset: UmiMultiDataset = hydra.utils.instantiate(cfg.task.dataset)

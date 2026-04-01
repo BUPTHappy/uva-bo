@@ -122,9 +122,9 @@ class UmiMultiDataset(Dataset[batch_type]):
                     f"No language latents available for dataset '{name}'. "
                     f"Known keys: {list(self.language_latents.keys())}"
                 )
-            data_dict["language_latents"] = self.rng.choice(
-                self.language_latents[name], size=1, replace=False
-            )[0]
+            # numpy rng.choice doesn't handle torch.Tensor elements reliably.
+            choice_idx = int(self.rng.integers(low=0, high=len(self.language_latents[name])))
+            data_dict["language_latents"] = self.language_latents[name][choice_idx]
         del data_dict["dataset_name"]
         return data_dict
 
