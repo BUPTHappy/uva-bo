@@ -64,6 +64,11 @@ from unified_video_action.dataset.base_dataset import BaseImageDataset
         "Example: 'cup_arrangement_0,cloth_folding_0,dish_washing_0,dynamic_tossing_0'."
     ),
 )
+@click.option(
+    "--disable_language/--no-disable_language",
+    default=False,
+    help="Disable language conditioning for offline eval (recommended for non-language UMI datasets).",
+)
 def main(
     checkpoint,
     output_dir,
@@ -73,6 +78,7 @@ def main(
     umi_dataset_root_dir,
     umi_used_episode_indices_file,
     umi_dataset_names,
+    disable_language,
 ):
     pathlib.Path(output_dir).mkdir(parents=True, exist_ok=True)
 
@@ -90,6 +96,9 @@ def main(
 
         if max_batches is not None:
             cfg.training.max_val_steps = int(max_batches)
+
+        if disable_language and getattr(cfg, "task", None) is not None:
+            cfg.task.dataset.language_emb_model = None
 
         # UMI multi-dataset overrides (ckpt may contain cluster-specific paths).
         if getattr(cfg, "task", None) is not None and cfg.task.task_type == "multiple_datasets":
