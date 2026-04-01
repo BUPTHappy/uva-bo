@@ -4,6 +4,8 @@ policy:
   _target_: unified_video_action.policy.unified_video_action_policy.UnifiedVideoActionPolicy
   selected_training_mode: null
   debug: None
+  # Eval-only: remove VAE conditioning frames by feeding a zero latent.
+  disable_vae_cond_eval: false
   n_action_steps: 8
   use_proprioception: null
   use_history_action: null

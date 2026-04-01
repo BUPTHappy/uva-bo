@@ -51,8 +51,13 @@ def prepare_data_predict_action(
         different_history_freq=cfg.model.policy.different_history_freq,
     )
 
+    disable_cond = bool(getattr(cfg, "eval", {}).get("disable_vae_cond", False))
     real, _, c, latent_size, proprioception_input = get_vae_latent(
-        x, model.vae_model, eval=True, proprioception_input=proprioception_input
+        x,
+        model.vae_model,
+        eval=True,
+        proprioception_input=proprioception_input,
+        disable_cond=disable_cond,
     )
     history_trajectory, trajectory = get_trajectory(
         nactions,

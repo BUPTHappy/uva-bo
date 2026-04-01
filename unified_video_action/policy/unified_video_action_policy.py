@@ -60,6 +60,8 @@ class UnifiedVideoActionPolicy(BaseImagePolicy):
 
         self.use_history_action = kwargs["use_history_action"]
         self.use_proprioception = kwargs["use_proprioception"]
+        # If True, remove conditioning frames at inference by feeding a zero latent.
+        self.disable_vae_cond_eval = bool(kwargs.get("disable_vae_cond_eval", False))
 
         ## =========================== load vae model ===========================
         with torch.no_grad():
@@ -283,7 +285,19 @@ class UnifiedVideoActionPolicy(BaseImagePolicy):
                 )
                 proprioception_input["second_image_z"] = second_image_z
 
-        c, latent_size = extract_latent_autoregressive(self.vae_model, c.detach())
+        if self.disable_vae_cond_eval:
+            # c: [B, C, T, H, W] in pixel space (-1..1). We skip VAE encode and
+            # provide an all-zero latent with the expected shape.
+            B, _, T, H, W = c.shape
+            h = H // self.autoregressive_model_params.vae_stride
+            w = W // self.autoregressive_model_params.vae_stride
+            c = torch.zeros(
+                (B, T, self.vae_model.embed_dim, h, w),
+                device=c.device,
+                dtype=torch.float32,
+            ).mul_(0.2325)
+        else:
+            c, latent_size = extract_latent_autoregressive(self.vae_model, c.detach())
 
         z, act_out = self.model.sample_tokens(
             bsz=B,

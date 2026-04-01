@@ -399,7 +399,13 @@ def extract_latent_autoregressive(vae_model, x):
     return z, latent_size
 
 
-def get_vae_latent(x, vae_model, eval=False, proprioception_input={}):
+def get_vae_latent(
+    x,
+    vae_model,
+    eval=False,
+    proprioception_input={},
+    disable_cond=False,
+):
     train = not eval
 
     c, x = torch.chunk(x, 2, dim=2)  # take the first half as condition
@@ -421,7 +427,14 @@ def get_vae_latent(x, vae_model, eval=False, proprioception_input={}):
             z, latent_size = extract_latent_autoregressive(vae_model, x)
         else:
             z, latent_size = extract_latent_autoregressive(vae_model, x)
-        c, latent_size = extract_latent_autoregressive(vae_model, c)
+        if disable_cond:
+            # Keep shape consistent with the learned model while removing
+            # any information from the conditioning frames at inference.
+            B = c.size(0)
+            T = c.size(2)
+            c = z.new_zeros((B, T, *latent_size))
+        else:
+            c, latent_size = extract_latent_autoregressive(vae_model, c)
 
     return x, z, c, latent_size, proprioception_input
 
