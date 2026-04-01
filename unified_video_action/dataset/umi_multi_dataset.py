@@ -147,10 +147,14 @@ class UmiMultiDataset(Dataset[batch_type]):
         )
 
         with torch.no_grad():
-            for dataset_name, language_goal in language_goals.items():
-                if dataset_name not in self.language_latents:
-                    continue
-                for language_goal_text in language_goal:
+            # Always ensure each dataset gets at least one latent, so __getitem__
+            # can sample without KeyError.
+            for dataset_name in self.language_latents.keys():
+                goals = language_goals.get(dataset_name, None)
+                if goals is None:
+                    # Fallback: use dataset name as a generic prompt.
+                    goals = [dataset_name.replace("_", " ")]
+                for language_goal_text in goals:
                     language_tokens = self.tokenizer(
                         [language_goal_text],
                         padding="max_length",

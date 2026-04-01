@@ -67,7 +67,10 @@ from unified_video_action.dataset.base_dataset import BaseImageDataset
 @click.option(
     "--disable_language/--no-disable_language",
     default=False,
-    help="Disable language conditioning for offline eval (recommended for non-language UMI datasets).",
+    help=(
+        "Disable language conditioning for offline eval without changing model structure "
+        "(keeps text modules loaded but skips using them)."
+    ),
 )
 def main(
     checkpoint,
@@ -97,8 +100,13 @@ def main(
         if max_batches is not None:
             cfg.training.max_val_steps = int(max_batches)
 
-        if disable_language and getattr(cfg, "task", None) is not None:
-            cfg.task.dataset.language_emb_model = None
+        # Do NOT change cfg.task.dataset.language_emb_model here; it would change
+        # model structure and break checkpoint loading. Instead, set an eval flag
+        # to skip using language conditioning.
+        if disable_language:
+            if not hasattr(cfg, "eval"):
+                cfg.eval = {}
+            cfg.eval.disable_language = True
 
         # UMI multi-dataset overrides (ckpt may contain cluster-specific paths).
         if getattr(cfg, "task", None) is not None and cfg.task.task_type == "multiple_datasets":

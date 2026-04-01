@@ -68,7 +68,8 @@ def prepare_data_predict_action(
     )
 
     text_latents = None
-    if cfg.task.dataset.language_emb_model is not None:
+    disable_language = bool(getattr(cfg, "eval", {}).get("disable_language", False))
+    if (cfg.task.dataset.language_emb_model is not None) and (not disable_language):
         if "umi" in cfg.task.name:
             text_latents = language_goal
         elif "libero" in cfg.task.name:
@@ -141,7 +142,8 @@ def test_video_fvd(
             actions = actions[:k]
             x = dict_apply(x, lambda x: x[:k])
 
-            if cfg.task.dataset.language_emb_model is not None:
+            disable_language = bool(getattr(cfg, "eval", {}).get("disable_language", False))
+            if (cfg.task.dataset.language_emb_model is not None) and (not disable_language):
                 if "language" in x["obs"]:
                     language_goal = x["obs"]["language"]
                     del x["obs"]["language"]
@@ -287,7 +289,8 @@ def test_action_l2(
 
             B, T, C, H, W = x["obs"]["image"].size()
 
-            if cfg.task.dataset.language_emb_model is not None:
+            disable_language = bool(getattr(cfg, "eval", {}).get("disable_language", False))
+            if (cfg.task.dataset.language_emb_model is not None) and (not disable_language):
                 if "language" in x["obs"]:
                     language_goal = x["obs"]["language"]
                     del x["obs"]["language"]
