@@ -32,8 +32,10 @@ def _is_zarr_extracted(zarr_dir: str) -> bool:
 
 
 def extract_data(dataset_name: str, data_dir: str, output_dir: str):
+    data_dir = os.path.abspath(data_dir)
+    output_dir = os.path.abspath(output_dir)
     os.makedirs(output_dir, exist_ok=True)
-    zarr_dir = f"{output_dir}/{dataset_name}.zarr"
+    zarr_dir = os.path.join(output_dir, f"{dataset_name}.zarr")
     if _is_zarr_extracted(zarr_dir):
         print(f"Skipping {dataset_name} because it already exists in {output_dir}")
         return
@@ -46,12 +48,18 @@ def extract_data(dataset_name: str, data_dir: str, output_dir: str):
         except OSError:
             pass
     print(
-        f"Decompressing {data_dir}/{dataset_name}.zarr.tar.lz4 to {output_dir}/{dataset_name}.zarr"
+        f"Decompressing {os.path.join(data_dir, dataset_name + '.zarr.tar.lz4')} to {zarr_dir}"
     )
     os.makedirs(zarr_dir, exist_ok=True)
+    lz4_path = os.path.join(data_dir, f"{dataset_name}.zarr.tar.lz4")
+    if not os.path.exists(lz4_path):
+        raise FileNotFoundError(
+            f"Missing lz4 archive: {lz4_path}. "
+            f"Check --data_dir (currently {data_dir})"
+        )
     subprocess.run(
         [
-            f"lz4 -d -c {data_dir}/{dataset_name}.zarr.tar.lz4 | tar xf - -C {output_dir}"
+            f'lz4 -d -c "{lz4_path}" | tar xf - -C "{output_dir}"'
         ],
         cwd=output_dir,
         shell=True,
