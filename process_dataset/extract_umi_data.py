@@ -6,15 +6,49 @@ import multiprocessing as mp
 import click
 
 
+def _is_zarr_extracted(zarr_dir: str) -> bool:
+    """
+    True if zarr_dir looks like a successfully extracted zarr store.
+    We purposely check for common zarr markers to avoid skipping empty folders
+    that were created before a failed extraction.
+    """
+    if not os.path.isdir(zarr_dir):
+        return False
+    # Zarr v2 marker files or v3-style structure.
+    markers = [
+        os.path.join(zarr_dir, ".zgroup"),
+        os.path.join(zarr_dir, ".zattrs"),
+        os.path.join(zarr_dir, "zarr.json"),
+        os.path.join(zarr_dir, "meta"),
+        os.path.join(zarr_dir, "data"),
+    ]
+    if any(os.path.exists(p) for p in markers):
+        return True
+    # Also treat any non-empty directory as extracted.
+    try:
+        return any(os.scandir(zarr_dir))
+    except OSError:
+        return False
+
+
 def extract_data(dataset_name: str, data_dir: str, output_dir: str):
     os.makedirs(output_dir, exist_ok=True)
-    if os.path.exists(f"{output_dir}/{dataset_name}.zarr"):
+    zarr_dir = f"{output_dir}/{dataset_name}.zarr"
+    if _is_zarr_extracted(zarr_dir):
         print(f"Skipping {dataset_name} because it already exists in {output_dir}")
         return
+    # If an empty directory exists (from a previous failed extraction), remove it.
+    if os.path.isdir(zarr_dir):
+        try:
+            if not any(os.scandir(zarr_dir)):
+                print(f"Removing empty directory {zarr_dir} from previous failure")
+                subprocess.run([f"rm -rf {zarr_dir}"], shell=True, check=True)
+        except OSError:
+            pass
     print(
         f"Decompressing {data_dir}/{dataset_name}.zarr.tar.lz4 to {output_dir}/{dataset_name}.zarr"
     )
-    os.makedirs(f"{output_dir}/{dataset_name}.zarr", exist_ok=True)
+    os.makedirs(zarr_dir, exist_ok=True)
     subprocess.run(
         [
             f"lz4 -d -c {data_dir}/{dataset_name}.zarr.tar.lz4 | tar xf - -C {output_dir}"
