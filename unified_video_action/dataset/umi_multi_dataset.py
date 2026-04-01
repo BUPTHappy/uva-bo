@@ -94,10 +94,10 @@ class UmiMultiDataset(Dataset[batch_type]):
         seed = 42
         self.rng: np.random.Generator = np.random.default_rng(seed)
         self.language_emb_model = language_emb_model
+        # Lazily filled when language_emb_model is enabled.
+        # Keys should match dataset names to avoid KeyError at sampling time.
         self.language_latents: dict[str, list[torch.Tensor]] = {
-            "cup_arrangement_0": [],
-            "towel_folding_0": [],
-            "mouse_arrangement_0": [],
+            name: [] for name in self.dataset_configs.keys()
         }
 
         if self.language_emb_model is not None:
@@ -115,16 +115,32 @@ class UmiMultiDataset(Dataset[batch_type]):
         dataset_idx, data_idx = self.index_pool[idx]
         data_dict = self.datasets[dataset_idx][data_idx]
         data_dict["ids"] = torch.tensor([idx])
-        data_dict["language_latents"] = self.rng.choice(
-            self.language_latents[data_dict["dataset_name"]], size=1, replace=False
-        )[0]
+        if self.language_emb_model is not None:
+            name = data_dict["dataset_name"]
+            if name not in self.language_latents or len(self.language_latents[name]) == 0:
+                raise KeyError(
+                    f"No language latents available for dataset '{name}'. "
+                    f"Known keys: {list(self.language_latents.keys())}"
+                )
+            data_dict["language_latents"] = self.rng.choice(
+                self.language_latents[name], size=1, replace=False
+            )[0]
         del data_dict["dataset_name"]
         return data_dict
 
     def get_language_latent(self):
-        language_goals = {'cup_arrangement_0': ['pick up an espresso cup and place it onto a saucer with the cup handle oriented to the left of the robot'],
-                            'towel_folding_0': ['grasp the left edge of the towel and move it to the right, folding it in half'],
-                            'mouse_arrangement_0': ['pick up the mouse and place it on the mouse pad']}
+        # Default language goals are only defined for the original 3 tasks.
+        # If you add datasets beyond these, either provide language latents externally
+        # or disable language_emb_model for offline eval.
+        language_goals = {
+            "cup_arrangement_0": [
+                "pick up an espresso cup and place it onto a saucer with the cup handle oriented to the left of the robot"
+            ],
+            "towel_folding_0": [
+                "grasp the left edge of the towel and move it to the right, folding it in half"
+            ],
+            "mouse_arrangement_0": ["pick up the mouse and place it on the mouse pad"],
+        }
 
         self.text_model, self.tokenizer, max_length = get_text_model(
             "umi", self.language_emb_model
@@ -132,6 +148,8 @@ class UmiMultiDataset(Dataset[batch_type]):
 
         with torch.no_grad():
             for dataset_name, language_goal in language_goals.items():
+                if dataset_name not in self.language_latents:
+                    continue
                 for language_goal_text in language_goal:
                     language_tokens = self.tokenizer(
                         [language_goal_text],
