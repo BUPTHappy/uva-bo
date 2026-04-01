@@ -307,7 +307,19 @@ class UmiLazyDataset(BaseLazyDataset):
         output_data_dict["action"] = {}
 
         for entry_meta in self.output_data_meta.values():
-            assert entry_meta.name in processed_data_dict
+            if entry_meta.name not in processed_data_dict:
+                # Some UMI zarr variants may not contain optional fields such as
+                # robot{i}_demo_start_pose, which would prevent us from computing
+                # *_wrt_start features. For offline training/eval, we can safely
+                # fill missing low-dim entries with zeros of the expected shape.
+                if entry_meta.data_type == "image":
+                    raise KeyError(
+                        f"Missing required image entry '{entry_meta.name}' in processed_data_dict. "
+                        f"Available keys: {list(processed_data_dict.keys())}"
+                    )
+                processed_data_dict[entry_meta.name] = np.zeros(
+                    (entry_meta.length, *entry_meta.shape), dtype=np.float32
+                )
             processed_data = processed_data_dict[entry_meta.name]
             if isinstance(processed_data, np.ndarray):
                 if entry_meta.data_type == "image":
