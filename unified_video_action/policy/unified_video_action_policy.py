@@ -31,6 +31,18 @@ from unified_video_action.utils.language_model import (
 )
 
 
+def _meta_image_channels(shape_meta) -> int:
+    """Channel count for main camera (e.g. 3 for RGB). Trims RGBA → RGB when > this."""
+    if shape_meta is None:
+        return 3
+    try:
+        if hasattr(shape_meta, "obs"):
+            return int(shape_meta.obs.image.shape[0])
+        return int(shape_meta["obs"]["image"]["shape"][0])
+    except (KeyError, AttributeError, IndexError, TypeError):
+        return 3
+
+
 class UnifiedVideoActionPolicy(BaseImagePolicy):
     def __init__(
         self,
@@ -56,6 +68,7 @@ class UnifiedVideoActionPolicy(BaseImagePolicy):
         self.language_emb_model = language_emb_model
         self.action_dim = shape_meta.action.shape[0]
         self.use_vae = use_vae
+        self.meta_image_channels = _meta_image_channels(shape_meta)
 
         self.kwargs = kwargs
         self.normalizer_type = kwargs["normalizer_type"]
@@ -116,7 +129,7 @@ class UnifiedVideoActionPolicy(BaseImagePolicy):
             language_emb_model=language_emb_model,
             shape_meta=shape_meta,
             use_pixel_tokens=not use_vae,
-            pixel_input_channels=3,
+            pixel_input_channels=self.meta_image_channels if not use_vae else 3,
         )
 
         ## =========================== load pretrained model ===========================
@@ -227,6 +240,20 @@ class UnifiedVideoActionPolicy(BaseImagePolicy):
         print("Model Unexpected keys:", unexpected_keys)
         print("---------------------------------------------------------------")
 
+    def _trim_pixel_input_channels(self, x, proprioception_input=None):
+        """Drop extra channels (e.g. alpha) so tensor matches shape_meta / MAR pixel mode."""
+        if self.use_vae:
+            return x, proprioception_input
+        nc = self.meta_image_channels
+        if x.dim() == 5 and x.shape[1] > nc:
+            x = x[:, :nc].contiguous()
+        if proprioception_input:
+            for key in ("second_image", "pred_second_image"):
+                if key in proprioception_input and proprioception_input[key] is not None:
+                    t = proprioception_input[key]
+                    if t.dim() == 5 and t.shape[1] > nc:
+                        proprioception_input[key] = t[:, :nc].contiguous()
+        return x, proprioception_input
 
     def predict_action(
         self, obs_dict: Dict[str, torch.Tensor], language_goal=None
@@ -285,6 +312,7 @@ class UnifiedVideoActionPolicy(BaseImagePolicy):
         c, proprioception_input, _ = process_data(
             {"obs": obs_dict}, task_name=self.task_name, eval=True, **self.kwargs
         )
+        c, proprioception_input = self._trim_pixel_input_channels(c, proprioception_input)
 
         if self.use_proprioception:
             if "second_image" in proprioception_input:
@@ -417,6 +445,7 @@ class UnifiedVideoActionPolicy(BaseImagePolicy):
         x, proprioception_input, _ = process_data(
             batch, task_name=self.task_name, **self.kwargs
         )
+        x, proprioception_input = self._trim_pixel_input_channels(x, proprioception_input)
         x, z, c, _, proprioception_input = get_vae_latent(
             x,
             self.vae_model,
