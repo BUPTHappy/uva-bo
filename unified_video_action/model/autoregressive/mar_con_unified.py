@@ -508,6 +508,18 @@ class MAR(nn.Module):
                 )
 
         embed_dim = cond.size(2)
+        L_vis = x.size(1)
+        if L_vis != cond.size(1):
+            raise ValueError(
+                f"forward_mae_encoder: x and cond seq len mismatch {L_vis} vs {cond.size(1)}"
+            )
+        buf_a = self.buffer_size_action
+        if L_vis % buf_a != 0:
+            raise ValueError(
+                f"forward_mae_encoder: visual token count L_vis={L_vis} must be divisible by "
+                f"buffer_size_action={buf_a} (fix chunk/T or buffer size)"
+            )
+        n_action_groups = L_vis // buf_a
 
         # ========= History Action =========
         if self.use_history_action:
@@ -531,6 +543,7 @@ class MAR(nn.Module):
             )
 
         # ========= Proprioception =========
+        proprioception_image_cond = None
         if self.use_proprioception:
             if self.task_name == "umi":
                 proprioception_state_cond = torch.cat(
@@ -544,6 +557,15 @@ class MAR(nn.Module):
                 )
                 proprioception_state_cond = self.proprioception_proj_cond(
                     proprioception_state_cond.float()
+                )
+                proprioception_state_cond_expand = (
+                    proprioception_state_cond.repeat_interleave(
+                        self.buffer_size_properception, dim=1
+                    )
+                )
+            elif "pusht" in self.task_name:
+                proprioception_state_cond = self.proprioception_proj_cond(
+                    proprioception_input["state"].float()
                 )
                 proprioception_state_cond_expand = (
                     proprioception_state_cond.repeat_interleave(
@@ -578,11 +600,18 @@ class MAR(nn.Module):
         # ========= Action =========
         if task_mode == "dynamic_model":
             action_latents = self.action_proj_cond(nactions)
+            if action_latents.size(1) != n_action_groups:
+                action_latents = torch.nn.functional.interpolate(
+                    action_latents.transpose(1, 2),
+                    size=n_action_groups,
+                    mode="linear",
+                    align_corners=False,
+                ).transpose(1, 2)
         else:
-            action_latents = self.fake_action_latent.unsqueeze(0).repeat(B, 16, 1)
-        action_latents_expand = action_latents.repeat_interleave(
-            self.buffer_size_action, dim=1
-        )
+            action_latents = self.fake_action_latent.unsqueeze(0).repeat(
+                B, n_action_groups, 1
+            )
+        action_latents_expand = action_latents.repeat_interleave(buf_a, dim=1)
 
         # ========= Wrist Video =========
         if self.predict_wrist_img:
@@ -591,9 +620,12 @@ class MAR(nn.Module):
                 parts.append(history_action_latents_expand)
             parts.append(action_latents_expand)
             if self.use_proprioception:
-                parts.extend(
-                    [proprioception_image_cond, proprioception_state_cond_expand]
-                )
+                if self.task_name == "umi" or "pusht" in self.task_name:
+                    parts.append(proprioception_state_cond_expand)
+                else:
+                    parts.extend(
+                        [proprioception_image_cond, proprioception_state_cond_expand]
+                    )
             x = torch.cat(parts, dim=-1)
         else:
             parts = [x, cond]
@@ -602,7 +634,7 @@ class MAR(nn.Module):
             parts.append(action_latents_expand)
 
             if self.use_proprioception:
-                if self.task_name == "umi":
+                if self.task_name == "umi" or "pusht" in self.task_name:
                     parts.append(proprioception_state_cond_expand)
                 else:
                     parts.extend(
