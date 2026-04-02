@@ -60,6 +60,10 @@ class UnifiedVideoActionPolicy(BaseImagePolicy):
     ):
         super().__init__()
 
+        if isinstance(use_vae, str):
+            use_vae = use_vae.strip().lower() in ("1", "true", "yes", "on")
+        self.use_vae = bool(use_vae)
+
         self.task_name = task_name
         self.task_modes = task_modes
         self.autoregressive_model_params = autoregressive_model_params
@@ -67,7 +71,6 @@ class UnifiedVideoActionPolicy(BaseImagePolicy):
         self.shift_action = shift_action
         self.language_emb_model = language_emb_model
         self.action_dim = shape_meta.action.shape[0]
-        self.use_vae = use_vae
         self.meta_image_channels = _meta_image_channels(shape_meta)
 
         self.kwargs = kwargs
@@ -78,7 +81,7 @@ class UnifiedVideoActionPolicy(BaseImagePolicy):
         self.use_proprioception = kwargs["use_proprioception"]
 
         ## =========================== load vae model (optional) ===========================
-        if use_vae:
+        if self.use_vae:
             if vae_model_params is None:
                 raise ValueError("vae_model_params is required when use_vae=True")
             with torch.no_grad():
@@ -128,8 +131,8 @@ class UnifiedVideoActionPolicy(BaseImagePolicy):
             task_name=self.task_name,
             language_emb_model=language_emb_model,
             shape_meta=shape_meta,
-            use_pixel_tokens=not use_vae,
-            pixel_input_channels=self.meta_image_channels if not use_vae else 3,
+            use_pixel_tokens=not self.use_vae,
+            pixel_input_channels=self.meta_image_channels if not self.use_vae else 3,
         )
 
         ## =========================== load pretrained model ===========================
@@ -452,6 +455,9 @@ class UnifiedVideoActionPolicy(BaseImagePolicy):
             eval=False,
             proprioception_input=proprioception_input,
             use_vae=self.use_vae,
+            pixel_trim_channels=(
+                self.meta_image_channels if not self.use_vae else None
+            ),
         )
         history_trajectory, trajectory = get_trajectory(
             nactions, T, self.shift_action, use_history_action=self.use_history_action

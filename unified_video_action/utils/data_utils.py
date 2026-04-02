@@ -400,8 +400,25 @@ def extract_latent_autoregressive(vae_model, x):
 
 
 def get_vae_latent(
-    x, vae_model, eval=False, proprioception_input={}, use_vae=True
+    x,
+    vae_model,
+    eval=False,
+    proprioception_input={},
+    use_vae=True,
+    pixel_trim_channels=None,
 ):
+    # Drop extra channels (e.g. RGBA) before chunk / MAR; works even if policy trim is missing
+    if not use_vae and pixel_trim_channels is not None:
+        nc = int(pixel_trim_channels)
+        if x.dim() == 5 and x.shape[1] > nc:
+            x = x[:, :nc].contiguous()
+        if proprioception_input:
+            for key in ("second_image", "pred_second_image"):
+                if key in proprioception_input and proprioception_input[key] is not None:
+                    t = proprioception_input[key]
+                    if t.dim() == 5 and t.shape[1] > nc:
+                        proprioception_input[key] = t[:, :nc].contiguous()
+
     c, x = torch.chunk(x, 2, dim=2)  # take the first half as condition
 
     if proprioception_input is not None:

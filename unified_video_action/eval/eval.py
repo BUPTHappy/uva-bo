@@ -52,12 +52,14 @@ def prepare_data_predict_action(
     )
 
     use_vae = getattr(model, "use_vae", True)
+    meta_ch = getattr(model, "meta_image_channels", 3)
     real, _, c, latent_size, proprioception_input = get_vae_latent(
         x,
         model.vae_model,
         eval=True,
         proprioception_input=proprioception_input,
         use_vae=use_vae,
+        pixel_trim_channels=(meta_ch if not use_vae else None),
     )
     history_trajectory, trajectory = get_trajectory(
         nactions,

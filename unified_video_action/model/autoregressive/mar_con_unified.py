@@ -808,10 +808,16 @@ class MAR(nn.Module):
         self.device = cond.device
         B, T, C, H, W = imgs.size()
         if self.use_pixel_tokens:
-            assert C == self.pixel_input_channels and cond.size(2) == self.pixel_input_channels, (
-                f"pixel mode expects RGB C={self.pixel_input_channels}, got imgs C={C}, cond C={cond.size(2)} "
-                "(if C=16 you are still feeding VAE latents; check policy use_vae=False and get_vae_latent)"
-            )
+            nc = self.pixel_input_channels
+            if C > nc or cond.size(2) > nc:
+                imgs = imgs[:, :, :nc].contiguous()
+                cond = cond[:, :, :nc].contiguous()
+                C = nc
+            if C != nc or cond.size(2) != nc:
+                raise ValueError(
+                    f"pixel mode needs C={nc}, got imgs C={imgs.size(2)}, cond C={cond.size(2)} "
+                    "(if C=16 you are feeding VAE latents while use_pixel_tokens is on)"
+                )
 
         # ========= Patchify =========
         imgs = rearrange(
@@ -829,6 +835,10 @@ class MAR(nn.Module):
         # ========= Proprioception =========
         if self.use_proprioception:
             if "second_image_z" in proprioception_input:
+                si = proprioception_input["second_image_z"]
+                if self.use_pixel_tokens and si.dim() == 5 and si.size(2) > self.pixel_input_channels:
+                    si = si[:, :, : self.pixel_input_channels].contiguous()
+                    proprioception_input["second_image_z"] = si
                 proprioception_input["second_image_z"] = rearrange(
                     proprioception_input["second_image_z"], "b t c h w -> (b t) c h w"
                 )
@@ -844,6 +854,10 @@ class MAR(nn.Module):
         # ========= Predicted Wrist Image =========
         if self.predict_wrist_img:
             if "pred_second_image_z" in proprioception_input:
+                pw = proprioception_input["pred_second_image_z"]
+                if self.use_pixel_tokens and pw.dim() == 5 and pw.size(2) > self.pixel_input_channels:
+                    pw = pw[:, :, : self.pixel_input_channels].contiguous()
+                    proprioception_input["pred_second_image_z"] = pw
                 proprioception_input["pred_second_image_z"] = rearrange(
                     proprioception_input["pred_second_image_z"],
                     "b t c h w -> (b t) c h w",
@@ -976,9 +990,14 @@ class MAR(nn.Module):
         self.device = cond.device
         B, T, C, H, W = cond.size()
         if self.use_pixel_tokens:
-            assert C == self.pixel_input_channels, (
-                f"pixel mode expects cond C={self.pixel_input_channels}, got {C}"
-            )
+            nc = self.pixel_input_channels
+            if C > nc:
+                cond = cond[:, :, :nc].contiguous()
+                C = nc
+            if C != nc:
+                raise ValueError(
+                    f"pixel mode needs cond C={nc}, got {cond.size(2)}"
+                )
         cond = rearrange(cond, "b t c h w -> (b t) c h w")
         cond = self.patchify(cond)
         cond = rearrange(
@@ -988,6 +1007,10 @@ class MAR(nn.Module):
         # ========= Proprioception =========
         if self.use_proprioception:
             if "second_image_z" in proprioception_input:
+                si = proprioception_input["second_image_z"]
+                if self.use_pixel_tokens and si.dim() == 5 and si.size(2) > self.pixel_input_channels:
+                    si = si[:, :, : self.pixel_input_channels].contiguous()
+                    proprioception_input["second_image_z"] = si
                 proprioception_input["second_image_z"] = rearrange(
                     proprioception_input["second_image_z"], "b t c h w -> (b t) c h w"
                 )
@@ -1006,6 +1029,14 @@ class MAR(nn.Module):
 
         # ========= Mask =========
         if task_mode == "inverse_model":
+            if self.use_pixel_tokens and x is not None:
+                xc = x.size(2)
+                if xc > self.pixel_input_channels:
+                    x = x[:, :, : self.pixel_input_channels].contiguous()
+                elif xc != self.pixel_input_channels:
+                    raise ValueError(
+                        f"inverse_model pixel mode needs x C={self.pixel_input_channels}, got {xc}"
+                    )
             x = rearrange(x, "b t c h w -> (b t) c h w")
             x = self.patchify(x)
             tokens = rearrange(
