@@ -451,6 +451,17 @@ class MAR(nn.Module):
 
         return mask
 
+    def _resize_temporal_pe(self, pe, T_target):
+        """pe: (1, T0, D) -> (1, T_target, D); data may have T != self.n_frames after temporal chunk."""
+        if pe.size(1) == T_target:
+            return pe
+        return torch.nn.functional.interpolate(
+            pe.transpose(1, 2),
+            size=T_target,
+            mode="linear",
+            align_corners=False,
+        ).transpose(1, 2)
+
     def forward_mae_encoder(
         self,
         x,
@@ -526,13 +537,20 @@ class MAR(nn.Module):
             if history_nactions is None:
                 history_action_latents = self.fake_latent_history_action.unsqueeze(
                     0
-                ).repeat(B, T * self.n_frames, 1)
+                ).repeat(B, n_action_groups, 1)
             else:
                 history_action_latents = self.history_action_proj_cond(history_nactions)
+                if history_action_latents.size(1) != n_action_groups:
+                    history_action_latents = torch.nn.functional.interpolate(
+                        history_action_latents.transpose(1, 2),
+                        size=n_action_groups,
+                        mode="linear",
+                        align_corners=False,
+                    ).transpose(1, 2)
 
                 if self.training:
                     history_action_mask = (
-                        torch.rand(B, T * self.n_frames) > self.action_mask_ratio
+                        torch.rand(B, n_action_groups) > self.action_mask_ratio
                     ).int()
                     history_action_latents[history_action_mask == 1] = (
                         self.fake_latent_history_action.to(history_action_latents.dtype)
@@ -646,12 +664,11 @@ class MAR(nn.Module):
         x = self.proj_cond_x_layer(x)
 
         # ========= Position Embedding =========
-        temporal_pos_embed_expanded = self.temporal_pos_embed.unsqueeze(2).expand(
-            -1, -1, S, -1
-        ) 
+        t_pe_enc = self._resize_temporal_pe(self.temporal_pos_embed, T)
+        temporal_pos_embed_expanded = t_pe_enc.unsqueeze(2).expand(-1, -1, S, -1)
         spatial_pos_embed_expanded = self.spatial_pos_embed.unsqueeze(1).expand(
             -1, T, -1, -1
-        ) 
+        )
 
         combined_pos_embed = (
             temporal_pos_embed_expanded + spatial_pos_embed_expanded
@@ -706,16 +723,13 @@ class MAR(nn.Module):
         _, _, embed_dim = x.shape
 
         # ========= Position Embedding =========
-        decoder_temporal_pos_embed_expanded = self.decoder_temporal_pos_embed.unsqueeze(
-            2
-        ).expand(
+        t_pe_dec = self._resize_temporal_pe(self.decoder_temporal_pos_embed, T)
+        decoder_temporal_pos_embed_expanded = t_pe_dec.unsqueeze(2).expand(
             -1, -1, S, -1
-        ) 
+        )
         decoder_spatial_pos_embed_expanded = self.decoder_spatial_pos_embed.unsqueeze(
             1
-        ).expand(
-            -1, T, -1, -1
-        ) 
+        ).expand(-1, T, -1, -1)
         decoder_combined_pos_embed = (
             decoder_temporal_pos_embed_expanded + decoder_spatial_pos_embed_expanded
         ).reshape(1, T * S, embed_dim)
@@ -748,16 +762,13 @@ class MAR(nn.Module):
                 x = x[:, self.buffer_size_text :]
 
         # ========= Diffusion Position Embedding =========
-        diffusion_temporal_pos_embed_expanded = self.diffusion_temporal_embed.unsqueeze(
-            2
-        ).expand(
+        t_pe_diff = self._resize_temporal_pe(self.diffusion_temporal_embed, T)
+        diffusion_temporal_pos_embed_expanded = t_pe_diff.unsqueeze(2).expand(
             -1, -1, S, -1
         )
         diffusion_spatial_pos_embed_expanded = self.diffusion_spatial_embed.unsqueeze(
             1
-        ).expand(
-            -1, T, -1, -1
-        )
+        ).expand(-1, T, -1, -1)
         diffusion_combined_pos_embed = (
             diffusion_temporal_pos_embed_expanded + diffusion_spatial_pos_embed_expanded
         ).reshape(1, T * S, embed_dim)
