@@ -806,11 +806,16 @@ class MAR(nn.Module):
             loss = video_loss
 
         elif task_mode == "policy_model" or task_mode == "inverse_model":
-            act_loss = self.diffactloss(
-                z=z, target=nactions, task_mode=task_mode, text_latents=text_latents
-            )
-            video_loss = torch.tensor(0.0).to(self.device)
-            loss = act_loss
+            if self.predict_action:
+                act_loss = self.diffactloss(
+                    z=z, target=nactions, task_mode=task_mode, text_latents=text_latents
+                )
+                video_loss = torch.tensor(0.0, device=z.device, dtype=z.dtype)
+                loss = act_loss
+            else:
+                act_loss = torch.tensor(0.0, device=z.device, dtype=z.dtype)
+                video_loss = torch.tensor(0.0, device=z.device, dtype=z.dtype)
+                loss = act_loss
 
         elif task_mode == "full_dynamic_model":
             if self.predict_wrist_img:
@@ -825,10 +830,14 @@ class MAR(nn.Module):
                 video_loss = self.diffloss(
                     z=z, target=target, mask=mask, text_latents=text_latents
                 )
-            act_loss = self.diffactloss(
-                z=z, target=nactions, task_mode=task_mode, text_latents=text_latents
-            )
-            loss = video_loss + act_loss
+            if self.predict_action:
+                act_loss = self.diffactloss(
+                    z=z, target=nactions, task_mode=task_mode, text_latents=text_latents
+                )
+                loss = video_loss + act_loss
+            else:
+                act_loss = torch.tensor(0.0, device=z.device, dtype=z.dtype)
+                loss = video_loss
 
         if self.predict_proprioception:
             properception_loss = self.diffproploss(

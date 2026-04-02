@@ -159,6 +159,16 @@ class UnifiedVideoActionPolicy(BaseImagePolicy):
                 self.task_modes = ["policy_model", "full_dynamic_model"]
             else:
                 self.task_modes = [self.selected_training_mode]
+
+        _pa = action_model_params.get("predict_action", False)
+        if isinstance(_pa, str):
+            _pa = _pa.strip().lower() in ("1", "true", "yes", "on")
+        if not bool(_pa):
+            _action_only_modes = {"policy_model", "inverse_model", "full_dynamic_model"}
+            self.task_modes = [m for m in self.task_modes if m not in _action_only_modes]
+            if len(self.task_modes) == 0:
+                self.task_modes = ["video_model", "dynamic_model"]
+
         print("----------------------------------------------------------------------")
         print("task_modes", self.task_modes)
         print("----------------------------------------------------------------------")
