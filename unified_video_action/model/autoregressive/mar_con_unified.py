@@ -1055,6 +1055,8 @@ class MAR(nn.Module):
         cond = rearrange(
             cond, "(b t) seq_len c -> b t seq_len c", b=B
         )
+        # Match training forward(): T may be n_frames-1 when use_history_action drops first frame.
+        n_frames_eff = cond.size(1)
 
         # ========= Proprioception =========
         if self.use_proprioception:
@@ -1094,16 +1096,20 @@ class MAR(nn.Module):
             tokens = rearrange(
                 x, "(b t) seq_len c -> b t seq_len c", b=B
             )
-            mask = torch.zeros(bsz, self.n_frames, self.seq_len).to(self.device)
+            if tokens.size(1) != n_frames_eff:
+                raise ValueError(
+                    f"inverse_model: x vs cond temporal length {tokens.size(1)} vs {n_frames_eff}"
+                )
+            mask = torch.zeros(bsz, n_frames_eff, self.seq_len).to(self.device)
         else:
             # init and sample generation orders
             tokens = torch.zeros(
-                bsz, self.n_frames, self.seq_len, self.token_embed_dim
+                bsz, n_frames_eff, self.seq_len, self.token_embed_dim
             ).to(self.device)
-            mask = torch.ones(bsz, self.n_frames, self.seq_len).to(self.device)
+            mask = torch.ones(bsz, n_frames_eff, self.seq_len).to(self.device)
             if self.predict_wrist_img:
                 proprioception_input["pred_second_image_z"] = torch.zeros(
-                    bsz, self.n_frames, self.seq_len, self.token_embed_dim
+                    bsz, n_frames_eff, self.seq_len, self.token_embed_dim
                 ).to(self.device)
 
         # ========= Sample Orders =========
@@ -1182,7 +1188,7 @@ class MAR(nn.Module):
                         mask[:bsz].bool(), mask_next.bool()
                     )
                 mask = mask_next
-                mask = rearrange(mask, "b (t s) -> b t s", t=self.n_frames)
+                mask = rearrange(mask, "b (t s) -> b t s", t=n_frames_eff)
 
                 if not cfg == 1.0:
                     mask_to_pred = torch.cat([mask_to_pred, mask_to_pred], dim=0)
@@ -1212,7 +1218,7 @@ class MAR(nn.Module):
                 cur_tokens = rearrange(cur_tokens, "b t s c -> b (t s) c")
                 cur_tokens[mask_to_pred.nonzero(as_tuple=True)] = sampled_token_latent
                 cur_tokens = rearrange(
-                    cur_tokens, "b (t s) c -> b t s c", t=self.n_frames
+                    cur_tokens, "b (t s) c -> b t s c", t=n_frames_eff
                 )
                 tokens = cur_tokens.clone()
 
@@ -1234,7 +1240,7 @@ class MAR(nn.Module):
                         sampled_wrist_token_latent
                     )
                     cur_wrist_tokens = rearrange(
-                        cur_wrist_tokens, "b (t s) c -> b t s c", t=self.n_frames
+                        cur_wrist_tokens, "b (t s) c -> b t s c", t=n_frames_eff
                     )
                     proprioception_input["pred_second_image_z"] = (
                         cur_wrist_tokens.clone()
