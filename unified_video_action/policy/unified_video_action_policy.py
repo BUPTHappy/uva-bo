@@ -115,6 +115,8 @@ class UnifiedVideoActionPolicy(BaseImagePolicy):
             task_name=self.task_name,
             language_emb_model=language_emb_model,
             shape_meta=shape_meta,
+            use_pixel_tokens=not use_vae,
+            pixel_input_channels=3,
         )
 
         ## =========================== load pretrained model ===========================

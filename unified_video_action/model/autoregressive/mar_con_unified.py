@@ -76,8 +76,17 @@ class MAR(nn.Module):
         self.patch_size = patch_size
         self.seq_h = self.seq_w = img_size // vae_stride // patch_size
         self.seq_len = self.seq_h * self.seq_w
-        self.token_embed_dim = vae_embed_dim * patch_size**2
-        self.vae_embed_dim = vae_embed_dim
+        # Raw RGB patch tokens (no VAE): fix token dim from RGB channels, not CLI vae_embed_dim
+        self.use_pixel_tokens = kwargs.get("use_pixel_tokens", False)
+        if self.use_pixel_tokens:
+            pc = int(kwargs.get("pixel_input_channels", 3))
+            self.pixel_input_channels = pc
+            self.token_embed_dim = pc * patch_size**2
+            self.vae_embed_dim = pc
+        else:
+            self.pixel_input_channels = None
+            self.token_embed_dim = vae_embed_dim * patch_size**2
+            self.vae_embed_dim = vae_embed_dim
         self.grad_checkpointing = grad_checkpointing
         self.label_drop_prob = label_drop_prob
 
@@ -798,6 +807,11 @@ class MAR(nn.Module):
     ):
         self.device = cond.device
         B, T, C, H, W = imgs.size()
+        if self.use_pixel_tokens:
+            assert C == self.pixel_input_channels and cond.size(2) == self.pixel_input_channels, (
+                f"pixel mode expects RGB C={self.pixel_input_channels}, got imgs C={C}, cond C={cond.size(2)} "
+                "(if C=16 you are still feeding VAE latents; check policy use_vae=False and get_vae_latent)"
+            )
 
         # ========= Patchify =========
         imgs = rearrange(
@@ -961,6 +975,10 @@ class MAR(nn.Module):
     ):
         self.device = cond.device
         B, T, C, H, W = cond.size()
+        if self.use_pixel_tokens:
+            assert C == self.pixel_input_channels, (
+                f"pixel mode expects cond C={self.pixel_input_channels}, got {C}"
+            )
         cond = rearrange(cond, "b t c h w -> (b t) c h w")
         cond = self.patchify(cond)
         cond = rearrange(
