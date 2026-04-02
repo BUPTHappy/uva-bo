@@ -1,6 +1,7 @@
 import torch
 import os
 from typing import Dict, Tuple
+from einops import rearrange
 import torch.nn.functional as F
 import random
 import numpy as np
@@ -42,6 +43,7 @@ class UnifiedVideoActionPolicy(BaseImagePolicy):
         language_emb_model=None,
         task_name=None,
         task_modes=[],
+        use_vae=True,
         **kwargs
     ):
         super().__init__()
@@ -53,6 +55,7 @@ class UnifiedVideoActionPolicy(BaseImagePolicy):
         self.shift_action = shift_action
         self.language_emb_model = language_emb_model
         self.action_dim = shape_meta.action.shape[0]
+        self.use_vae = use_vae
 
         self.kwargs = kwargs
         self.normalizer_type = kwargs["normalizer_type"]
@@ -61,12 +64,17 @@ class UnifiedVideoActionPolicy(BaseImagePolicy):
         self.use_history_action = kwargs["use_history_action"]
         self.use_proprioception = kwargs["use_proprioception"]
 
-        ## =========================== load vae model ===========================
-        with torch.no_grad():
-            self.vae_model = AutoencoderKL(**vae_model_params)
-        self.vae_model.eval()
-        for param in self.vae_model.parameters():
-            param.requires_grad = False
+        ## =========================== load vae model (optional) ===========================
+        if use_vae:
+            if vae_model_params is None:
+                raise ValueError("vae_model_params is required when use_vae=True")
+            with torch.no_grad():
+                self.vae_model = AutoencoderKL(**vae_model_params)
+            self.vae_model.eval()
+            for param in self.vae_model.parameters():
+                param.requires_grad = False
+        else:
+            self.vae_model = None
 
         ## =========================== load language model ===========================
         self.text_model, self.tokenizer, self.max_length = get_text_model(
@@ -278,12 +286,21 @@ class UnifiedVideoActionPolicy(BaseImagePolicy):
 
         if self.use_proprioception:
             if "second_image" in proprioception_input:
-                second_image_z, _ = extract_latent_autoregressive(
-                    self.vae_model, proprioception_input["second_image"]
-                )
-                proprioception_input["second_image_z"] = second_image_z
+                if self.use_vae:
+                    second_image_z, _ = extract_latent_autoregressive(
+                        self.vae_model, proprioception_input["second_image"]
+                    )
+                    proprioception_input["second_image_z"] = second_image_z
+                else:
+                    si = proprioception_input["second_image"]
+                    proprioception_input["second_image_z"] = rearrange(
+                        si, "b c t h w -> b t c h w"
+                    )
 
-        c, latent_size = extract_latent_autoregressive(self.vae_model, c.detach())
+        if self.use_vae:
+            c, latent_size = extract_latent_autoregressive(self.vae_model, c.detach())
+        else:
+            c = c.detach()
 
         z, act_out = self.model.sample_tokens(
             bsz=B,
@@ -399,7 +416,11 @@ class UnifiedVideoActionPolicy(BaseImagePolicy):
             batch, task_name=self.task_name, **self.kwargs
         )
         x, z, c, _, proprioception_input = get_vae_latent(
-            x, self.vae_model, eval=False, proprioception_input=proprioception_input
+            x,
+            self.vae_model,
+            eval=False,
+            proprioception_input=proprioception_input,
+            use_vae=self.use_vae,
         )
         history_trajectory, trajectory = get_trajectory(
             nactions, T, self.shift_action, use_history_action=self.use_history_action

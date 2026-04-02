@@ -399,29 +399,45 @@ def extract_latent_autoregressive(vae_model, x):
     return z, latent_size
 
 
-def get_vae_latent(x, vae_model, eval=False, proprioception_input={}):
-    train = not eval
-
+def get_vae_latent(
+    x, vae_model, eval=False, proprioception_input={}, use_vae=True
+):
     c, x = torch.chunk(x, 2, dim=2)  # take the first half as condition
 
     if proprioception_input is not None:
         if "second_image" in proprioception_input:
-            second_image_z, _ = extract_latent_autoregressive(
-                vae_model, proprioception_input["second_image"]
-            )
-            proprioception_input["second_image_z"] = second_image_z
+            if use_vae:
+                second_image_z, _ = extract_latent_autoregressive(
+                    vae_model, proprioception_input["second_image"]
+                )
+                proprioception_input["second_image_z"] = second_image_z
+            else:
+                si = proprioception_input["second_image"]
+                proprioception_input["second_image_z"] = rearrange(
+                    si, "b c t h w -> b t c h w"
+                )
         if "pred_second_image" in proprioception_input:
-            pred_second_image_z, _ = extract_latent_autoregressive(
-                vae_model, proprioception_input["pred_second_image"]
-            )
-            proprioception_input["pred_second_image_z"] = pred_second_image_z
+            pred = proprioception_input["pred_second_image"]
+            if pred is None:
+                pass
+            elif use_vae:
+                pred_second_image_z, _ = extract_latent_autoregressive(
+                    vae_model, pred
+                )
+                proprioception_input["pred_second_image_z"] = pred_second_image_z
+            else:
+                proprioception_input["pred_second_image_z"] = rearrange(
+                    pred, "b c t h w -> b t c h w"
+                )
 
-    with torch.no_grad():
-        if train:
+    if use_vae:
+        with torch.no_grad():
             z, latent_size = extract_latent_autoregressive(vae_model, x)
-        else:
-            z, latent_size = extract_latent_autoregressive(vae_model, x)
-        c, latent_size = extract_latent_autoregressive(vae_model, c)
+            c, latent_size = extract_latent_autoregressive(vae_model, c)
+    else:
+        z = x
+        c = c
+        latent_size = z.size()[2:]
 
     return x, z, c, latent_size, proprioception_input
 

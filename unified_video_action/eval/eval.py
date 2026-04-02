@@ -51,8 +51,13 @@ def prepare_data_predict_action(
         different_history_freq=cfg.model.policy.different_history_freq,
     )
 
+    use_vae = getattr(model, "use_vae", True)
     real, _, c, latent_size, proprioception_input = get_vae_latent(
-        x, model.vae_model, eval=True, proprioception_input=proprioception_input
+        x,
+        model.vae_model,
+        eval=True,
+        proprioception_input=proprioception_input,
+        use_vae=use_vae,
     )
     history_trajectory, trajectory = get_trajectory(
         nactions,
@@ -173,7 +178,12 @@ def test_video_fvd(
                 proprioception_input=proprioception_input,
                 task_mode="full_dynamic_model",
             )
-            pred = decode_from_sample_autoregressive(model.vae_model, z / 0.2325)
+            if getattr(model, "use_vae", True):
+                pred = decode_from_sample_autoregressive(
+                    model.vae_model, z / 0.2325
+                )
+            else:
+                pred = z
             pred = pred.clamp(-1, 1).cpu()
 
             pred = 1 + rearrange(pred, "(b t) c h w -> b t h w c", b=k)
