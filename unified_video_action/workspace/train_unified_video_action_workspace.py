@@ -192,12 +192,16 @@ class TrainUnifiedVideoActionWorkspace(BaseWorkspace):
         if cfg.training.use_ema:
             ema = hydra.utils.instantiate(cfg.ema, model=self.ema_model)
 
-        # configure env
+        # LIBERO / sim envs: only load on the main process. Running AsyncVectorEnv
+        # (MuJoCo + subprocess workers) on every DDP rank multiplies GPU/OSGL load and
+        # commonly causes worker crashes (BrokenPipeError) or OOM.
+        env_runners = None
         if (
             cfg.model.policy.action_model_params.predict_action
             and "env_runner" in cfg.task
         ):
-            env_runners = load_env_runner(cfg, self.output_dir)
+            if accelerator.is_main_process:
+                env_runners = load_env_runner(cfg, self.output_dir)
 
         # configure checkpoint
         topk_manager = TopKCheckpointManager(
@@ -353,8 +357,10 @@ class TrainUnifiedVideoActionWorkspace(BaseWorkspace):
                 and "env_runner" in cfg.task
             ):
                 if (self.epoch % cfg.training.rollout_every) == 0:
-                    runner_log = env_rollout(cfg, env_runners, policy)
-                    step_log.update(runner_log)
+                    if accelerator.is_main_process:
+                        runner_log = env_rollout(cfg, env_runners, policy)
+                        step_log.update(runner_log)
+                    accelerator.wait_for_everyone()
 
             # ========= checkpoint =========
             if (
