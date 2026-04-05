@@ -65,6 +65,8 @@ class LiberoReplayImageDataset(BaseImageDataset):
 
             if language_emb_model == "clip":
                 cache_zarr_path = dataset_path + "_clip.zarr.zip"
+            elif language_emb_model is None:
+                cache_zarr_path = dataset_path + "_nolang.zarr.zip"
             else:
                 raise NotImplementedError(f"Language model {language_emb_model} not implemented")
 
@@ -118,6 +120,9 @@ class LiberoReplayImageDataset(BaseImageDataset):
                 rgb_keys.append(key)
             elif type == "low_dim":
                 lowdim_keys.append(key)
+
+        if language_emb_model is None:
+            lowdim_keys = [k for k in lowdim_keys if k != "language"]
 
         self.data_aug = data_aug
 
@@ -301,6 +306,9 @@ def _convert_robomimic_to_replay(
         elif type == "low_dim":
             lowdim_keys.append(key)
 
+    if language_emb_model is None:
+        lowdim_keys = [k for k in lowdim_keys if k != "language"]
+
     root = zarr.group(store)
     data_group = root.require_group("data", overwrite=True)
     meta_group = root.require_group("meta", overwrite=True)
@@ -310,12 +318,12 @@ def _convert_robomimic_to_replay(
     language_all = {}
     count = 0
 
+    tokenizer = None
     if language_emb_model == "clip":
         tokenizer = AutoTokenizer.from_pretrained("openai/clip-vit-base-patch32")
-    else:
+    elif language_emb_model is not None:
         raise NotImplementedError(f"Language model {language_emb_model} not implemented")
 
-    
     dataset_paths = glob.glob(dataset_path + "/*.hdf5")
 
     for dataset_path_each in dataset_paths:
@@ -339,6 +347,8 @@ def _convert_robomimic_to_replay(
         
     seq_max_len = 30
 
+    language_input_ids = None
+    language_attention_mask = None
     if language_emb_model == "clip":
         language_all_tokens = [
             tokenizer(
@@ -355,8 +365,6 @@ def _convert_robomimic_to_replay(
         language_attention_mask = [
             item.attention_mask.unsqueeze(1) for item in language_all_tokens
         ]
-    else:
-        raise NotImplementedError(f"Language model {language_emb_model} not implemented")
 
     demos = demos_all
     episode_ends = list()
@@ -394,8 +402,6 @@ def _convert_robomimic_to_replay(
                     this_language_data.append(
                         language_tokens.repeat(this_data[-1].shape[0], 1, 1)
                     )
-                else:
-                    raise NotImplementedError(f"Language model {language_emb_model} not implemented")
 
         this_data = np.concatenate(this_data, axis=0)
 
@@ -408,11 +414,9 @@ def _convert_robomimic_to_replay(
 
             assert this_data.shape == (n_steps,) + tuple(shape_meta["action"]["shape"])
 
-            this_language_data = np.concatenate(this_language_data, axis=0)
             if language_emb_model == "clip":
+                this_language_data = np.concatenate(this_language_data, axis=0)
                 assert this_language_data.shape == (n_steps,) + tuple([2, seq_max_len])
-            else:
-                raise NotImplementedError(f"Language model {language_emb_model} not implemented")
         else:
             assert this_data.shape == (n_steps,) + tuple(
                 shape_meta["obs"][key]["shape"]
@@ -426,7 +430,7 @@ def _convert_robomimic_to_replay(
             dtype=this_data.dtype,
         )
 
-        if key == "action":
+        if key == "action" and language_emb_model == "clip":
             _ = data_group.array(
                 name="language",
                 data=this_language_data,
