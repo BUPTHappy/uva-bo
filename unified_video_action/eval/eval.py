@@ -276,6 +276,8 @@ def test_action_l2(
     plot_actions=False,
 ):
     action_l2_distances = []
+    eef_traj_errors = []
+    final_state_dists = []
 
     with torch.no_grad():
         for n, batch in enumerate(loader):
@@ -344,11 +346,19 @@ def test_action_l2(
                     actions=trajectory,
                 )
 
-                ## calculate l2 distance between the predicted action and ground truth action
-                l2_distance = torch.sqrt(
-                    torch.sum((trajectory[:, :, :9] - act_out[:, :, :9]) ** 2, dim=-1)
-                )
-                action_l2_distances.append(l2_distance.mean())
+                Da = trajectory.shape[-1]
+                diff = trajectory - act_out
+                # Per-timestep L2 over full action (UMI: 10 = xyz + rot6d + gripper)
+                l2_full = torch.sqrt(torch.sum(diff**2, dim=-1))
+                action_l2_distances.append(l2_full.mean())
+                # EEF trajectory error: mean L2 on position (first 3 dims) over the horizon
+                if Da >= 3:
+                    eef_pos_err = torch.sqrt(torch.sum(diff[:, :, :3] ** 2, dim=-1))
+                    eef_traj_errors.append(eef_pos_err.mean())
+                else:
+                    eef_traj_errors.append(l2_full.mean())
+                # Final state distance: L2 between predicted and GT at last timestep (full action)
+                final_state_dists.append(torch.sqrt(torch.sum(diff[:, -1, :] ** 2, dim=-1)).mean())
 
             if cfg.training.debug:
                 break
@@ -357,6 +367,12 @@ def test_action_l2(
     if cfg.model.policy.action_model_params.predict_action:
         log_data[f"{name_label}val_action_l2_distances"] = (
             torch.stack(action_l2_distances).mean().item()
+        )
+        log_data[f"{name_label}val_eef_traj_error"] = (
+            torch.stack(eef_traj_errors).mean().item()
+        )
+        log_data[f"{name_label}val_final_state_dist"] = (
+            torch.stack(final_state_dists).mean().item()
         )
 
     return log_data
