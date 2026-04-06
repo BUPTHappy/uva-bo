@@ -15,9 +15,9 @@ dataset:
 
   # Folder names under dataset_root_dir must be <key>.zarr (e.g. cup_arrangement_0.zarr).
   # Hydra struct mode blocks NEW keys on the CLI here. Use either:
-  #   (1) task=umi_multi_cloth_folding  (only cloth_folding_0), or
-  #   (2) ++task.dataset.dataset_configs='{cloth_folding_0: {include_episode_num: -1, mask_mirror: false}}'
-  #       (replace whole dict; removes default cup/towel/mouse keys)
+  #   (1) task=umi_multi_cup_only  (only cup_arrangement_0), or
+  #   (2) task=umi_multi_cloth_folding  (only cloth_folding_0), or
+  #   (3) ++task.dataset.dataset_configs='{...}'  (replace whole dict)
   dataset_configs:
     cup_arrangement_0:
       include_episode_num: -1 # -1 means all episodes
