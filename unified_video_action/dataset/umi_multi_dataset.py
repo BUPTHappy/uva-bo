@@ -1,7 +1,7 @@
 import json
 import os
 from typing import Any, Dict, Optional, Union, cast
-from omegaconf import DictConfig, OmegaConf
+from omegaconf import DictConfig, OmegaConf, MISSING
 import torch
 from torch.utils.data import DataLoader, Dataset
 
@@ -45,7 +45,23 @@ class UmiMultiDataset(Dataset[batch_type]):
         **base_config: Union[dict[str, Any], DictConfig],
     ):
 
-        self.dataset_root_dir: str = dataset_root_dir
+        if dataset_root_dir is None or dataset_root_dir is MISSING:
+            raise ValueError(
+                "dataset_root_dir is missing. Set task.dataset.dataset_root_dir to the "
+                "directory that contains <name>.zarr folders (e.g. .../umi_data/zarr)."
+            )
+        if isinstance(dataset_root_dir, str) and not dataset_root_dir.strip():
+            raise ValueError(
+                "dataset_root_dir is empty. Set task.dataset.dataset_root_dir to the "
+                "directory that contains <name>.zarr folders (e.g. .../umi_data/zarr)."
+            )
+        self.dataset_root_dir: str = os.path.abspath(
+            os.path.expanduser(str(dataset_root_dir))
+        )
+        if not os.path.isdir(self.dataset_root_dir):
+            raise FileNotFoundError(
+                f"dataset_root_dir is not a directory: {self.dataset_root_dir}"
+            )
 
         if isinstance(dataset_configs, DictConfig):
             dataset_configs = cast(
@@ -77,9 +93,14 @@ class UmiMultiDataset(Dataset[batch_type]):
             print(f"Initializing dataset: {dataset_name}")
             config = deepcopy(self.base_config)
             config.update(deepcopy(dataset_config))
-            config["zarr_path"] = os.path.join(
-                self.dataset_root_dir, dataset_name + ".zarr"
-            )
+            zarr_path = os.path.join(self.dataset_root_dir, dataset_name + ".zarr")
+            if not zarr_path or not os.path.isdir(zarr_path):
+                raise FileNotFoundError(
+                    f"Expected dataset zarr not found: {zarr_path}\n"
+                    f"  dataset_root_dir={self.dataset_root_dir} must contain "
+                    f"{dataset_name}.zarr (see task.dataset.dataset_configs)."
+                )
+            config["zarr_path"] = zarr_path
             config["name"] = dataset_name
             dataset = UmiLazyDataset(**config)
             self.datasets.append(dataset)

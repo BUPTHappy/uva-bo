@@ -2,10 +2,12 @@
 # Images are still resized to 256 in resize_image(); use img_size 256, vae_stride 1, patch_size 16.
 name: uva
 
+# _self_ must be last so this file's `model:` overrides (e.g. predict_action, use_vae) are not
+# overwritten by defaults from model/uva.yaml.
 defaults:
-  - _self_
   - task: umi_multi
   - model: uva
+  - _self_
 
 dataloader:
   batch_size: 32

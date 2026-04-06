@@ -32,7 +32,10 @@ if "WANDB_API_KEY" in os.environ:
 def main(cfg: OmegaConf):
     OmegaConf.resolve(cfg)
 
-    if cfg.model.policy.action_model_params.predict_action == False:
+    _pa = cfg.model.policy.action_model_params.predict_action
+    if isinstance(_pa, str):
+        _pa = _pa.strip().lower() in ("1", "true", "yes", "on")
+    if not bool(_pa):
         cfg.checkpoint.topk.monitor_key = "video_fvd"
         cfg.checkpoint.topk.format_str = (
             "epoch={epoch:04d}-video_fvd={video_fvd:.3f}.ckpt"
