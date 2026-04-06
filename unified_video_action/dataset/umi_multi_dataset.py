@@ -134,9 +134,9 @@ class UmiMultiDataset(Dataset[batch_type]):
         dataset_idx, data_idx = self.index_pool[idx]
         data_dict = self.datasets[dataset_idx][data_idx]
         data_dict["ids"] = torch.tensor([idx])
-        data_dict["language_latents"] = self.rng.choice(
-            self.language_latents[data_dict["dataset_name"]], size=1, replace=False
-        )[0]
+        # NumPy choice() cannot sample from a list of torch.Tensors (scalar conversion error).
+        pool = self.language_latents[data_dict["dataset_name"]]
+        data_dict["language_latents"] = pool[int(self.rng.integers(0, len(pool)))]
         del data_dict["dataset_name"]
         return data_dict
 
