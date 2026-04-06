@@ -144,6 +144,16 @@ class DiffActLoss(nn.Module):
         else:
             raise NotImplementedError
 
+        # conv_fc maps 4 video frames -> 16 latent steps; trajectory length from get_trajectory
+        # depends on image T and shift_action (e.g. 28 when T=8). Match z to target before reshape.
+        if z.dim() == 3 and z.size(0) == bsz and z.size(1) != seq_len:
+            z = torch.nn.functional.interpolate(
+                z.transpose(1, 2),
+                size=seq_len,
+                mode="linear",
+                align_corners=False,
+            ).transpose(1, 2)
+
         target = target.reshape(bsz * seq_len, -1)
         z = z.reshape(bsz * seq_len, -1)
 
