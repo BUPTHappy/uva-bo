@@ -11,18 +11,10 @@ def extract_data(dataset_name: str, data_dir: str, output_dir: str):
     if os.path.exists(f"{output_dir}/{dataset_name}.zarr"):
         print(f"Skipping {dataset_name} because it already exists in {output_dir}")
         return
-    lz4_path = os.path.join(data_dir, f"{dataset_name}.zarr.tar.lz4")
-    if not os.path.isfile(lz4_path):
-        raise FileNotFoundError(
-            f"Missing compressed dataset: {lz4_path}\n"
-            "  Generate it first from the repo root, e.g.\n"
-            "    python process_dataset/download_dataset.py\n"
-            "  (that downloads .zip under uva/umi_data/zip/ and writes .tar.lz4 under uva/umi_data/lz4/),\n"
-            "  or pass --data_dir=/path/to/dir/containing/*.zarr.tar.lz4"
-        )
     print(
         f"Decompressing {data_dir}/{dataset_name}.zarr.tar.lz4 to {output_dir}/{dataset_name}.zarr"
     )
+    os.makedirs(f"{output_dir}/{dataset_name}.zarr", exist_ok=True)
     subprocess.run(
         [
             f"lz4 -d -c {data_dir}/{dataset_name}.zarr.tar.lz4 | tar xf - -C {output_dir}"
