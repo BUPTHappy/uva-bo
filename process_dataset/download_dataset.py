@@ -10,10 +10,7 @@ PROJECT_NAME = "uva"
 # Comment out the datasets you don't want to download
 DATASETS = {
     ### UMI
-    "dish_washing_0": "https://real.stanford.edu/umi/data/dish_washing/bimanual_dish_washing.zarr.zip",
-    "cloth_folding_0": "https://real.stanford.edu/umi/data/bimanual_cloth_folding/bimanual_cloth_folding.zarr.zip",
-    "dynamic_tossing_0": "https://real.stanford.edu/umi/data/dynamic_tossing/dynamic_tossing.zarr.zip",
-    "cup_arrangement_1": "https://real.stanford.edu/umi/data/cup_arrangement/cup_in_the_lab.zarr.zip",
+    "cup_arrangement_0": "https://real.stanford.edu/umi/data/cup_in_the_wild/cup_in_the_wild.zarr.zip",
 }
 
 
