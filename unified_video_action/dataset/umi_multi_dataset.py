@@ -116,9 +116,7 @@ class UmiMultiDataset(Dataset[batch_type]):
         self.rng: np.random.Generator = np.random.default_rng(seed)
         self.language_emb_model = language_emb_model
         self.language_latents: dict[str, list[torch.Tensor]] = {
-            "cup_arrangement_0": [],
-            "towel_folding_0": [],
-            "mouse_arrangement_0": [],
+            name: [] for name in self.dataset_configs.keys()
         }
 
         if self.language_emb_model is not None:
@@ -143,9 +141,25 @@ class UmiMultiDataset(Dataset[batch_type]):
         return data_dict
 
     def get_language_latent(self):
-        language_goals = {'cup_arrangement_0': ['pick up an espresso cup and place it onto a saucer with the cup handle oriented to the left of the robot'],
-                            'towel_folding_0': ['grasp the left edge of the towel and move it to the right, folding it in half'],
-                            'mouse_arrangement_0': ['pick up the mouse and place it on the mouse pad']}
+        known_prompts: dict[str, list[str]] = {
+            "cup_arrangement_0": [
+                "pick up an espresso cup and place it onto a saucer with the cup handle oriented to the left of the robot"
+            ],
+            "towel_folding_0": [
+                "grasp the left edge of the towel and move it to the right, folding it in half"
+            ],
+            "mouse_arrangement_0": [
+                "pick up the mouse and place it on the mouse pad"
+            ],
+        }
+        language_goals: dict[str, list[str]] = {}
+        for name in self.dataset_configs.keys():
+            if name in known_prompts:
+                language_goals[name] = known_prompts[name]
+            else:
+                language_goals[name] = [
+                    f"Perform the robot manipulation task for dataset {name}."
+                ]
 
         self.text_model, self.tokenizer, max_length = get_text_model(
             "umi", self.language_emb_model

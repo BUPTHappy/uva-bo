@@ -13,6 +13,9 @@ dataset:
   dataset_root_dir: ???
   used_episode_indices_file: ""
 
+  # Folder names under dataset_root_dir must be <key>.zarr (e.g. cup_arrangement_0.zarr).
+  # Override this block if you only have other datasets, e.g. cloth_folding_0 only:
+  #   task.dataset.dataset_configs='{cloth_folding_0: {include_episode_num: -1, mask_mirror: false}}'
   dataset_configs:
     cup_arrangement_0:
       include_episode_num: -1 # -1 means all episodes
