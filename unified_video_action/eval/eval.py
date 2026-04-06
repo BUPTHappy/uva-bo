@@ -346,6 +346,16 @@ def test_action_l2(
                     actions=trajectory,
                 )
 
+                # sample_tokens / DiffActLoss use a fixed action horizon (e.g. 16); trajectory from
+                # get_trajectory can be longer (e.g. 28 when image T=8). Align like training DiffActLoss.
+                if act_out.dim() == 3 and trajectory.dim() == 3 and act_out.size(1) != trajectory.size(1):
+                    act_out = F.interpolate(
+                        act_out.transpose(1, 2).float(),
+                        size=trajectory.size(1),
+                        mode="linear",
+                        align_corners=False,
+                    ).transpose(1, 2).to(act_out.dtype)
+
                 Da = trajectory.shape[-1]
                 diff = trajectory - act_out
                 # Per-timestep L2 over full action (UMI: 10 = xyz + rot6d + gripper)
