@@ -31,6 +31,11 @@ policy:
     enable: true
     coeff: 0.1
     warmup_steps: 5000
+    # Two-stage REPA: align-only pretrain, then joint training with decaying align weight
+    pretrain_steps: 10000
+    post_start_coeff: 0.5
+    min_coeff: 0.0
+    decay_steps: 50000
     loss_type: cosine
     use_projector: true
     projector_dim: 512
