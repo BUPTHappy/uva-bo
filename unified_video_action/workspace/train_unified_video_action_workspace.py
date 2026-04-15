@@ -138,8 +138,13 @@ class TrainUnifiedVideoActionWorkspace(BaseWorkspace):
                 kwargs_handlers=[ddp_kwargs],
             )
         else:
+            # Align-only / task_mode branches can skip parts of the MAR forward; dynamic
+            # requires_grad toggles also need this to avoid DDP reduction errors.
+            ddp_kwargs = DistributedDataParallelKwargs(find_unused_parameters=True)
             accelerator = Accelerator(
-                log_with="wandb", mixed_precision=self.cfg.training.mixed_precision
+                log_with="wandb",
+                mixed_precision=self.cfg.training.mixed_precision,
+                kwargs_handlers=[ddp_kwargs],
             )
 
         if accelerator.is_main_process:
