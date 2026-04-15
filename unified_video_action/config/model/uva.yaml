@@ -15,12 +15,20 @@ policy:
 
   # =========================== new: student tokenizer ===========================
   use_student_tokenizer: true
+  use_student_transformer_replace: true
   student_tokenizer_params:
     img_size: 256
     patch_size: 16
     in_channels: 3
     latent_channels: 16
     hidden_dim: 256
+    depth: 4
+    num_heads: 8
+    mlp_ratio: 4.0
+    dropout: 0.0
+  student_transformer_params:
+    hidden_dim: 512
+    out_dim: 768
     depth: 4
     num_heads: 8
     mlp_ratio: 4.0
@@ -32,7 +40,7 @@ policy:
     coeff: 0.1
     warmup_steps: 5000
     loss_type: cosine
-    use_projector: true
+    use_projector: false
     projector_dim: 512
     teacher_target: vae_latent
     teacher_use_mode: true

@@ -29,6 +29,7 @@ from unified_video_action.utils.language_model import (
     extract_text_features,
 )
 from unified_video_action.model.common.student_tokenizer import StudentLatentTokenizer
+from unified_video_action.model.common.student_transformer import StudentTransformerBridge
 
 class UnifiedVideoActionPolicy(BaseImagePolicy):
     def __init__(
@@ -65,6 +66,10 @@ class UnifiedVideoActionPolicy(BaseImagePolicy):
         self.use_student_tokenizer = bool(kwargs.get("use_student_tokenizer", False))
         self.student_tokenizer_params = kwargs.get("student_tokenizer_params", None)
         self.align_params = kwargs.get("align_params", None)
+        self.use_student_transformer_replace = bool(
+            kwargs.get("use_student_transformer_replace", False)
+        )
+        self.student_transformer_params = kwargs.get("student_transformer_params", None)
 
         # alignment controls 
         self.use_alignment = False
@@ -160,6 +165,15 @@ class UnifiedVideoActionPolicy(BaseImagePolicy):
             language_emb_model=language_emb_model,
             shape_meta=shape_meta,
         )
+
+        self.student_transformer = None
+        if self.use_student_transformer_replace:
+            default_token_dim = int(autoregressive_model_params.vae_embed_dim)
+            default_out_dim = int(self.model.decoder_embed.out_features)
+            student_tf_params = dict(self.student_transformer_params or {})
+            student_tf_params.setdefault("token_dim", default_token_dim)
+            student_tf_params.setdefault("out_dim", default_out_dim)
+            self.student_transformer = StudentTransformerBridge(**student_tf_params)
 
         # =========================== load pretrained model ===========================
         self.pretrained_model_path = autoregressive_model_params.pretrained_model_path
@@ -345,19 +359,28 @@ class UnifiedVideoActionPolicy(BaseImagePolicy):
                     proprioception_input["second_image_z"] = second_image_z
             c, _ = extract_latent_autoregressive(self.vae_model, c.detach())
 
-        z, act_out = self.model.sample_tokens(
-            bsz=B,
-            cond=c,
-            text_latents=text_latents,
-            num_iter=self.autoregressive_model_params.num_iter,
-            cfg=self.autoregressive_model_params.cfg,
-            cfg_schedule=self.autoregressive_model_params.cfg_schedule,
-            temperature=self.autoregressive_model_params.temperature,
-            history_nactions=history_nactions,
-            proprioception_input=proprioception_input,
-            task_mode="policy_model",
-            vae_model=self.vae_model,
-        )
+        if self.use_student_transformer_replace and self.student_transformer is not None:
+            z_student = self._compute_student_transformer_z(c)
+            act_out = self.model.diffactloss.sample(
+                z_student,
+                self.autoregressive_model_params.temperature,
+                cfg=1.0,
+                text_latents=text_latents,
+            )
+        else:
+            z, act_out = self.model.sample_tokens(
+                bsz=B,
+                cond=c,
+                text_latents=text_latents,
+                num_iter=self.autoregressive_model_params.num_iter,
+                cfg=self.autoregressive_model_params.cfg,
+                cfg_schedule=self.autoregressive_model_params.cfg_schedule,
+                temperature=self.autoregressive_model_params.temperature,
+                history_nactions=history_nactions,
+                proprioception_input=proprioception_input,
+                task_mode="policy_model",
+                vae_model=self.vae_model,
+            )
 
         # unnormalize prediction
         Da = self.action_dim
@@ -414,6 +437,11 @@ class UnifiedVideoActionPolicy(BaseImagePolicy):
                 self.add_weight_decay(self.student_tokenizer, weight_decay=weight_decay)
             )
 
+        if self.student_transformer is not None:
+            optim_groups.extend(
+                self.add_weight_decay(self.student_transformer, weight_decay=weight_decay)
+            )
+
         if self.align_projector is not None:
             optim_groups.extend(
                 self.add_weight_decay(self.align_projector, weight_decay=weight_decay)
@@ -451,6 +479,15 @@ class UnifiedVideoActionPolicy(BaseImagePolicy):
         B, T, C, H, W = z.shape
         return z.permute(0, 1, 3, 4, 2).reshape(B, T, H * W, C)
 
+    def _latent_to_patch_tokens(self, z: torch.Tensor) -> torch.Tensor:
+        """
+        z [B, T, C, H, W] -> [B, T, S, C_patch]
+        """
+        B, T, _, _, _ = z.shape
+        z_bt = z.reshape(B * T, z.shape[2], z.shape[3], z.shape[4])
+        z_patch = self.model.patchify(z_bt)
+        return z_patch.reshape(B, T, z_patch.shape[1], z_patch.shape[2])
+
     def _encode_student_latent(self, x: torch.Tensor):
         """
         x [B, C, T, H, W] -> latent [B, T, C_lat, H_lat, W_lat], token_feat [B, T, S, D]
@@ -478,7 +515,12 @@ class UnifiedVideoActionPolicy(BaseImagePolicy):
         """
         student_raw = student_tokens
         if self.align_projector is not None:
-            student_tokens = self.align_projector(student_tokens)
+            projector_in = None
+            if isinstance(self.align_projector, torch.nn.Sequential) and len(self.align_projector) > 0:
+                if hasattr(self.align_projector[0], "in_features"):
+                    projector_in = self.align_projector[0].in_features
+            if projector_in is None or projector_in == student_tokens.shape[-1]:
+                student_tokens = self.align_projector(student_tokens)
 
         assert student_tokens.shape == teacher_tokens.shape, (
             student_tokens.shape,
@@ -512,6 +554,39 @@ class UnifiedVideoActionPolicy(BaseImagePolicy):
         if return_metrics:
             return loss, metrics
         return loss
+
+    def _compute_student_transformer_z(self, cond_latent: torch.Tensor) -> torch.Tensor:
+        cond_tokens = self._latent_to_patch_tokens(cond_latent)
+        return self.student_transformer(cond_tokens)
+
+    def _compute_teacher_transformer_z(
+        self,
+        cond_latent: torch.Tensor,
+        text_latents: torch.Tensor = None,
+        history_nactions: torch.Tensor = None,
+        nactions: torch.Tensor = None,
+        task_mode: str = "policy_model",
+        proprioception_input: dict = None,
+    ) -> torch.Tensor:
+        if proprioception_input is None:
+            proprioception_input = {}
+        B, T, _, _, _ = cond_latent.shape
+        cond_tokens = self._latent_to_patch_tokens(cond_latent)
+        x_tokens = torch.zeros_like(cond_tokens)
+        mask = torch.zeros(B, T, cond_tokens.shape[2], device=cond_latent.device)
+        with torch.no_grad():
+            h = self.model.forward_mae_encoder(
+                x_tokens,
+                mask,
+                cond_tokens,
+                text_latents=text_latents,
+                history_nactions=history_nactions,
+                nactions=nactions,
+                task_mode=task_mode,
+                proprioception_input=proprioception_input,
+            )
+            z_teacher = self.model.forward_mae_decoder(h, mask)
+        return z_teacher
 
 
     def compute_loss(self, batch, **kwargs):
@@ -631,15 +706,54 @@ class UnifiedVideoActionPolicy(BaseImagePolicy):
 
         selected_mode = random.choice(self.task_modes)
 
-        loss, video_loss, act_loss = self.model(
-            z,
-            c,
-            history_trajectory,
-            trajectory,
-            text_latents,
-            task_mode=selected_mode,
-            proprioception_input=proprioception_input,
+        use_replaced_transformer = (
+            self.use_student_transformer_replace
+            and self.student_transformer is not None
+            and selected_mode in ["policy_model", "inverse_model"]
         )
+        if use_replaced_transformer:
+            z_student_transformer = self._compute_student_transformer_z(c)
+            dummy_target = torch.zeros_like(z_student_transformer)
+            dummy_mask = torch.zeros(
+                B,
+                self.model.n_frames * self.model.seq_len,
+                device=z_student_transformer.device,
+                dtype=z_student_transformer.dtype,
+            )
+            loss, video_loss, act_loss = self.model.forward_loss(
+                z=z_student_transformer,
+                target=dummy_target,
+                mask=dummy_mask,
+                nactions=trajectory,
+                task_mode=selected_mode,
+                text_latents=text_latents,
+            )
+            if self.use_alignment:
+                teacher_c = self._extract_teacher_latent(c_img)
+                z_teacher_transformer = self._compute_teacher_transformer_z(
+                    cond_latent=teacher_c,
+                    text_latents=text_latents,
+                    history_nactions=history_trajectory,
+                    nactions=trajectory,
+                    task_mode=selected_mode,
+                    proprioception_input=proprioception_input,
+                )
+                align_loss, align_metrics = self._compute_alignment_loss(
+                    z_student_transformer, z_teacher_transformer, return_metrics=True
+                )
+                align_cos = align_metrics["cosine"]
+                align_student_norm = align_metrics["student_norm"]
+                align_teacher_norm = align_metrics["teacher_norm"]
+        else:
+            loss, video_loss, act_loss = self.model(
+                z,
+                c,
+                history_trajectory,
+                trajectory,
+                text_latents,
+                task_mode=selected_mode,
+                proprioception_input=proprioception_input,
+            )
 
         if self.use_student_tokenizer and self.use_alignment:
             coeff = self._get_align_coeff()
@@ -660,6 +774,11 @@ class UnifiedVideoActionPolicy(BaseImagePolicy):
 
         if self.align_projector is not None:
             for param in self.align_projector.parameters():
+                if param.grad is None:
+                    loss += 0 * param.sum()
+
+        if self.student_transformer is not None:
+            for param in self.student_transformer.parameters():
                 if param.grad is None:
                     loss += 0 * param.sum()
 
