@@ -70,6 +70,10 @@ class UnifiedVideoActionPolicy(BaseImagePolicy):
         self.use_alignment = False
         self.align_coeff = 0.0
         self.align_warmup_steps = 0
+        self.align_pretrain_steps = 10000
+        self.align_post_start_coeff = 0.5
+        self.align_min_coeff = 0.0
+        self.align_decay_steps = 50000
         self.align_loss_type = "cosine"
         self.align_use_projector = True
         self.align_projector = None
@@ -77,11 +81,20 @@ class UnifiedVideoActionPolicy(BaseImagePolicy):
         self.align_debug = False
         self.align_debug_every = 200
         self._align_step = 0
+        self._main_model_frozen = False
 
         if self.align_params is not None:
             self.use_alignment = bool(self.align_params.get("enable", False))
             self.align_coeff = float(self.align_params.get("coeff", 0.0))
             self.align_warmup_steps = int(self.align_params.get("warmup_steps", 0))
+            self.align_pretrain_steps = int(self.align_params.get("pretrain_steps", 10000))
+            self.align_post_start_coeff = float(
+                self.align_params.get("post_start_coeff", 0.5)
+            )
+            self.align_min_coeff = float(self.align_params.get("min_coeff", 0.0))
+            self.align_decay_steps = int(
+                self.align_params.get("decay_steps", max(1, self.align_warmup_steps))
+            )
             self.align_loss_type = str(self.align_params.get("loss_type", "cosine"))
             self.align_use_projector = bool(self.align_params.get("use_projector", True))
             self.align_teacher_use_mode = bool(self.align_params.get("teacher_use_mode", True))
@@ -461,10 +474,27 @@ class UnifiedVideoActionPolicy(BaseImagePolicy):
     def _get_align_coeff(self) -> float:
         if not self.use_alignment:
             return 0.0
-        if self.align_warmup_steps <= 0:
+        if self._align_step < self.align_pretrain_steps:
+            return 1.0
+
+        # Smoothly decay coeff after alignment-only pretraining stage.
+        if self.align_decay_steps <= 0:
             return self.align_coeff
-        ratio = min(1.0, float(self._align_step) / float(self.align_warmup_steps))
-        return self.align_coeff * ratio
+        post_step = self._align_step - self.align_pretrain_steps
+        progress = min(1.0, max(0.0, float(post_step) / float(self.align_decay_steps)))
+        smooth = 0.5 * (1.0 + np.cos(np.pi * progress))
+        start_coeff = self.align_post_start_coeff
+        end_coeff = max(0.0, self.align_min_coeff)
+        return end_coeff + (start_coeff - end_coeff) * smooth
+
+    def _set_main_model_trainable(self, trainable: bool):
+        if trainable and not self._main_model_frozen:
+            return
+        if (not trainable) and self._main_model_frozen:
+            return
+        for param in self.model.parameters():
+            param.requires_grad = trainable
+        self._main_model_frozen = not trainable
 
     def _compute_alignment_loss(
         self,
@@ -625,28 +655,44 @@ class UnifiedVideoActionPolicy(BaseImagePolicy):
             x, self.vae_model, eval=False, proprioception_input=proprioception_input
         )
 
-        history_trajectory, trajectory = get_trajectory(
-            nactions, T, self.shift_action, use_history_action=self.use_history_action
+        align_only_stage = (
+            self.training
+            and self.use_student_tokenizer
+            and self.use_alignment
+            and self._align_step < self.align_pretrain_steps
         )
+        self._set_main_model_trainable(not align_only_stage)
 
-        selected_mode = random.choice(self.task_modes)
+        if align_only_stage:
+            loss = align_loss
+            video_loss = torch.zeros_like(align_loss)
+            act_loss = torch.zeros_like(align_loss)
+        else:
+            history_trajectory, trajectory = get_trajectory(
+                nactions, T, self.shift_action, use_history_action=self.use_history_action
+            )
 
-        loss, video_loss, act_loss = self.model(
-            z,
-            c,
-            history_trajectory,
-            trajectory,
-            text_latents,
-            task_mode=selected_mode,
-            proprioception_input=proprioception_input,
-        )
+            selected_mode = random.choice(self.task_modes)
 
-        if self.use_student_tokenizer and self.use_alignment:
+            loss, video_loss, act_loss = self.model(
+                z,
+                c,
+                history_trajectory,
+                trajectory,
+                text_latents,
+                task_mode=selected_mode,
+                proprioception_input=proprioception_input,
+            )
+
+        if self.use_student_tokenizer and self.use_alignment and not align_only_stage:
             coeff = self._get_align_coeff()
             loss = loss + coeff * align_loss
             align_coeff_value = torch.tensor(coeff, device=x.device, dtype=align_loss.dtype)
-            if self.training:
-                self._align_step += 1
+        elif align_only_stage:
+            align_coeff_value = torch.tensor(1.0, device=x.device, dtype=align_loss.dtype)
+
+        if self.use_student_tokenizer and self.use_alignment and self.training:
+            self._align_step += 1
 
         ## not recommended, fix the problem in DDM unused parameters
         for param in self.model.parameters():
