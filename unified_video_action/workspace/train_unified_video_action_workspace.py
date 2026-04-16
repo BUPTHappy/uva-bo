@@ -325,7 +325,9 @@ class TrainUnifiedVideoActionWorkspace(BaseWorkspace):
                         and cfg.training.deepspeed_config is not None
                     ): 
                         with torch.autocast(device_type="cuda", dtype=torch.bfloat16): # You might need to change the device_type to str(device) for other versions of torch
-                            raw_loss, loss_tuple = self.model(batch)
+                            raw_loss, loss_tuple = self.model(
+                                batch, global_step=self.global_step
+                            )
                             if len(loss_tuple) >= 7:
                                 (
                                     loss_diffusion,
@@ -350,7 +352,9 @@ class TrainUnifiedVideoActionWorkspace(BaseWorkspace):
                                 loss_align_student_norm = torch.tensor(0.0, device=raw_loss.device)
                                 loss_align_teacher_norm = torch.tensor(0.0, device=raw_loss.device)
                     else:
-                        raw_loss, loss_tuple = self.model(batch)
+                        raw_loss, loss_tuple = self.model(
+                            batch, global_step=self.global_step
+                        )
                         if len(loss_tuple) >= 7:
                             (
                                 loss_diffusion,

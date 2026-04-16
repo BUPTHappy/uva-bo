@@ -546,6 +546,10 @@ class UnifiedVideoActionPolicy(BaseImagePolicy):
 
     def compute_loss(self, batch, **kwargs):
         B, T, C, H, W = batch["obs"]["image"].size()
+        schedule_step = self._align_step
+        if "global_step" in kwargs and kwargs["global_step"] is not None:
+            schedule_step = max(schedule_step, int(kwargs["global_step"]))
+            self._align_step = schedule_step
 
         text_latents = None
         if self.language_emb_model == "clip":
@@ -638,11 +642,11 @@ class UnifiedVideoActionPolicy(BaseImagePolicy):
                 if (
                     self.align_debug
                     and self.training
-                    and (self._align_step % max(1, self.align_debug_every) == 0)
+                    and (schedule_step % max(1, self.align_debug_every) == 0)
                 ):
                     print(
                         "[ALIGN DEBUG] "
-                        f"step={self._align_step} "
+                        f"step={schedule_step} "
                         f"z_feat={tuple(z_feat.shape)} teacher_z={tuple(teacher_z_tokens.shape)} "
                         f"c_feat={tuple(c_feat.shape)} teacher_c={tuple(teacher_c_tokens.shape)} "
                         f"loss={align_loss.item():.6f} cos={align_cos.item():.6f} "
@@ -659,7 +663,7 @@ class UnifiedVideoActionPolicy(BaseImagePolicy):
             self.training
             and self.use_student_tokenizer
             and self.use_alignment
-            and self._align_step < self.align_pretrain_steps
+            and schedule_step < self.align_pretrain_steps
         )
         self._set_main_model_trainable(not align_only_stage)
 
@@ -692,7 +696,7 @@ class UnifiedVideoActionPolicy(BaseImagePolicy):
             align_coeff_value = torch.tensor(1.0, device=x.device, dtype=align_loss.dtype)
 
         if self.use_student_tokenizer and self.use_alignment and self.training:
-            self._align_step += 1
+            self._align_step = schedule_step + 1
 
         ## not recommended, fix the problem in DDM unused parameters
         for param in self.model.parameters():
