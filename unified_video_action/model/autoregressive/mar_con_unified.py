@@ -650,7 +650,7 @@ class MAR(nn.Module):
         # ========= Transformer Encoder Blocks =========
         if self.grad_checkpointing and not torch.jit.is_scripting():
             for block in self.encoder_blocks:
-                x = checkpoint(block, x)
+                x = checkpoint(block, x, use_reentrant=False)
         else:
             for block in self.encoder_blocks:
                 x = block(x)
@@ -695,7 +695,7 @@ class MAR(nn.Module):
         # ========= Transformer Decoder Blocks =========
         if self.grad_checkpointing and not torch.jit.is_scripting():
             for block in self.decoder_blocks:
-                x = checkpoint(block, x)
+                x = checkpoint(block, x, use_reentrant=False)
         else:
             for block in self.decoder_blocks:
                 x = block(x)
