@@ -515,6 +515,10 @@ class UnifiedVideoActionPolicy(BaseImagePolicy):
             teacher_tokens.shape,
         )
 
+        # FP32 here avoids half-precision blow-ups in cosine / MSE alignment.
+        student_tokens = student_tokens.float()
+        teacher_tokens = teacher_tokens.float()
+
         metrics = None
         # eps>default helps fp16 / near-zero vectors avoid NaN in backward through normalize
         _norm_eps = 1e-6
@@ -700,20 +704,24 @@ class UnifiedVideoActionPolicy(BaseImagePolicy):
         if self.use_student_tokenizer and self.use_alignment and self.training:
             self._align_step = schedule_step + 1
 
-        ## not recommended, fix the problem in DDM unused parameters
+        ## DDP unused-parameter dummy terms: `0 * param.sum()` becomes NaN if any weight is NaN
+        ## (0*NaN is NaN), which poisons the whole loss. Use nan_to_num so the term stays 0.
+        def _ddp_unused_term(p: torch.Tensor) -> torch.Tensor:
+            return torch.nan_to_num(p, nan=0.0, posinf=0.0, neginf=0.0).sum().mul(0.0)
+
         for param in self.model.parameters():
-            if param.grad is None:  # Likely unused in loss computation
-                loss += 0 * param.sum()
+            if param.grad is None:
+                loss = loss + _ddp_unused_term(param)
 
         if self.student_tokenizer is not None:
             for param in self.student_tokenizer.parameters():
                 if param.grad is None:
-                    loss += 0 * param.sum()
+                    loss = loss + _ddp_unused_term(param)
 
         if self.align_projector is not None:
             for param in self.align_projector.parameters():
                 if param.grad is None:
-                    loss += 0 * param.sum()
+                    loss = loss + _ddp_unused_term(param)
 
         return loss, (
             video_loss,
