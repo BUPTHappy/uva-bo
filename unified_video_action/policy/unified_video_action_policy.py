@@ -516,15 +516,17 @@ class UnifiedVideoActionPolicy(BaseImagePolicy):
         )
 
         metrics = None
+        # eps>default helps fp16 / near-zero vectors avoid NaN in backward through normalize
+        _norm_eps = 1e-6
         if self.align_loss_type.lower() == "mse":
             loss = F.mse_loss(student_tokens, teacher_tokens)
-            student_tokens_norm = F.normalize(student_tokens, dim=-1)
-            teacher_tokens_norm = F.normalize(teacher_tokens, dim=-1)
+            student_tokens_norm = F.normalize(student_tokens, dim=-1, eps=_norm_eps)
+            teacher_tokens_norm = F.normalize(teacher_tokens, dim=-1, eps=_norm_eps)
             cosine = (student_tokens_norm * teacher_tokens_norm).sum(dim=-1).mean()
         else:
             # default: cosine (REPA style)
-            student_tokens_norm = F.normalize(student_tokens, dim=-1)
-            teacher_tokens_norm = F.normalize(teacher_tokens, dim=-1)
+            student_tokens_norm = F.normalize(student_tokens, dim=-1, eps=_norm_eps)
+            teacher_tokens_norm = F.normalize(teacher_tokens, dim=-1, eps=_norm_eps)
             cosine = (student_tokens_norm * teacher_tokens_norm).sum(dim=-1).mean()
             loss = 1.0 - cosine
 

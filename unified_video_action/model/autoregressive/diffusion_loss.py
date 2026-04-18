@@ -62,7 +62,9 @@ class DiffLoss(nn.Module):
         loss = loss_dict["loss"]
 
         if mask is not None:
-            loss = (loss * mask).sum() / mask.sum()
+            msum = mask.sum()
+            # Avoid 0/0 when the mask is empty (can destabilize joint training).
+            loss = (loss * mask).sum() / msum.clamp(min=1.0)
         return loss.mean()
 
     def sample(self, z, temperature=1.0, cfg=1.0, text_latents=None):

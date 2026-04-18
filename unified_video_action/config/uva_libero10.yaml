@@ -47,10 +47,10 @@ training:
   tqdm_interval_sec: 1.0
   use_ema: true
   val_every: 1
-  mixed_precision: 'fp16'
-  # Optional: clip global grad norm before optimizer.step (helps joint multi-task + fp16).
-  # Example: 1.0; leave null to disable.
-  max_grad_norm: null
+  # bf16 is much more stable than fp16 for joint video+policy + align (fp16 often -> NaN).
+  mixed_precision: bf16
+  # Strongly recommended for task.task_modes with multiple heads (video + policy, etc.).
+  max_grad_norm: 1.0
   
 checkpoint:
   save_last_ckpt: true
