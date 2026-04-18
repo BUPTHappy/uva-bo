@@ -383,6 +383,11 @@ class TrainUnifiedVideoActionWorkspace(BaseWorkspace):
 
                     # step optimizer
                     if self.global_step % cfg.training.gradient_accumulate_every == 0:
+                        max_grad_norm = cfg.training.get("max_grad_norm", None)
+                        if max_grad_norm is not None and float(max_grad_norm) > 0:
+                            accelerator.clip_grad_norm_(
+                                self.model.parameters(), float(max_grad_norm)
+                            )
                         self.optimizer.step()
                         self.optimizer.zero_grad()
                         self.lr_scheduler.step()

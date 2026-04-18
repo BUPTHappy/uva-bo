@@ -48,6 +48,9 @@ training:
   use_ema: true
   val_every: 1
   mixed_precision: 'fp16'
+  # Optional: clip global grad norm before optimizer.step (helps joint multi-task + fp16).
+  # Example: 1.0; leave null to disable.
+  max_grad_norm: null
   
 checkpoint:
   save_last_ckpt: true
