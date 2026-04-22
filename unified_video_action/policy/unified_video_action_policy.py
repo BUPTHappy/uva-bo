@@ -178,6 +178,38 @@ class UnifiedVideoActionPolicy(BaseImagePolicy):
         print("Loading pretrained model: ", self.pretrained_model_path)
         print("----------------------------------------------------------------------")
 
+        def _safe_load(model_state_dict, pretrained_state_dict, mismatch_keys, source_name):
+            if len(model_state_dict) == 0:
+                print(
+                    f"[Warning] Empty model state_dict while loading {source_name}. Skip loading."
+                )
+                return [], []
+
+            if len(pretrained_state_dict) == 0:
+                print(
+                    f"[Warning] No matching keys found in {source_name}. "
+                    "Training will continue from random initialization."
+                )
+                return [], []
+
+            model_state_dict.update(pretrained_state_dict)
+            missing_keys, unexpected_keys = self.model.load_state_dict(
+                model_state_dict, strict=False
+            )
+
+            mismatch_list = list(mismatch_keys)
+            preview = mismatch_list[:20]
+            print("----------------------------------------------------------------------")
+            print(
+                f"[Warning] Skipped {len(mismatch_list)} mismatched/missing keys "
+                f"from {source_name}."
+            )
+            if len(preview) > 0:
+                print("Mismatch preview:", preview)
+            print("----------------------------------------------------------------------")
+
+            return missing_keys, unexpected_keys
+
         pretrained_diffusion_model_ckpt = torch.load(
             self.pretrained_model_path, map_location="cpu", weights_only=False
         )
@@ -207,23 +239,18 @@ class UnifiedVideoActionPolicy(BaseImagePolicy):
                     if k not in pretrained_diffusion_model_ckpt_
                     or pretrained_diffusion_model_ckpt_[k].size() != v.size()
                 }
-                
-                print("----------------------------------------------------------------------")
-                print(
-                    "pretrained_state_dict_mismatch: ",
-                    pretrained_state_dict_mismatch.keys(),
-                )
-                print("----------------------------------------------------------------------")
-                
-                assert len(model_state_dict) > 0
-                assert len(pretrained_state_dict) > 0
-                model_state_dict.update(pretrained_state_dict)
-
-                missing_keys, unexpected_keys = self.model.load_state_dict(
-                    model_state_dict, strict=False
+                missing_keys, unexpected_keys = _safe_load(
+                    model_state_dict=model_state_dict,
+                    pretrained_state_dict=pretrained_state_dict,
+                    mismatch_keys=pretrained_state_dict_mismatch.keys(),
+                    source_name="checkpoint state_dicts.ema_model",
                 )
             else:
-                raise NotImplementedError
+                print(
+                    "[Warning] key 'state_dicts' exists but 'ema_model' is missing. "
+                    "Skip pretrained loading and continue training."
+                )
+                missing_keys, unexpected_keys = [], []
 
         elif "model_ema" in pretrained_diffusion_model_ckpt:
             ## load from MAR pretrained mdoel
@@ -237,16 +264,25 @@ class UnifiedVideoActionPolicy(BaseImagePolicy):
                 for k, v in pretrained_diffusion_model_ckpt_.items()
                 if k in model_state_dict and model_state_dict[k].size() == v.size()
             }
-            assert len(model_state_dict) > 0
-            assert len(pretrained_state_dict) > 0
-            model_state_dict.update(pretrained_state_dict)
-
-            missing_keys, unexpected_keys = self.model.load_state_dict(
-                model_state_dict, strict=False
+            pretrained_state_dict_mismatch = {
+                k: v
+                for k, v in model_state_dict.items()
+                if k not in pretrained_diffusion_model_ckpt_
+                or pretrained_diffusion_model_ckpt_[k].size() != v.size()
+            }
+            missing_keys, unexpected_keys = _safe_load(
+                model_state_dict=model_state_dict,
+                pretrained_state_dict=pretrained_state_dict,
+                mismatch_keys=pretrained_state_dict_mismatch.keys(),
+                source_name="checkpoint model_ema",
             )
 
         else:
-            raise NotImplementedError
+            print(
+                "[Warning] Unsupported checkpoint format. "
+                "Skip pretrained loading and continue training."
+            )
+            missing_keys, unexpected_keys = [], []
 
         print("---------------------------------------------------------------")
         print("Model Missing keys:", missing_keys)
