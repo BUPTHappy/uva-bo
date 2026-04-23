@@ -298,6 +298,15 @@ class TrainUnifiedVideoActionWorkspace(BaseWorkspace):
                         "epoch": self.epoch,
                         "lr": self.lr_scheduler.get_last_lr()[0],
                     }
+                    policy_module = accelerator.unwrap_model(self.model)
+                    if hasattr(policy_module, "_last_align_metrics"):
+                        align_metrics = getattr(policy_module, "_last_align_metrics", {})
+                        if isinstance(align_metrics, dict) and len(align_metrics) > 0:
+                            for key, value in align_metrics.items():
+                                if torch.is_tensor(value):
+                                    step_log[key] = value.detach().float().item()
+                                elif isinstance(value, (float, int)):
+                                    step_log[key] = float(value)
 
                     is_last_batch = batch_idx == (len(train_dataloader) - 1)
                     if not is_last_batch:
