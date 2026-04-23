@@ -593,20 +593,24 @@ class UnifiedVideoActionPolicy(BaseImagePolicy):
         if self.use_student_tokenizer and self.use_alignment:
             loss = loss + self.align_coeff * align_loss
 
-        ## not recommended, fix the problem in DDM unused parameters
+        # DDP safety: always attach every trainable parameter to graph.
+        # Checking `param.grad is None` inside forward is unstable across iterations.
+        def _ddp_unused_term(param: torch.Tensor) -> torch.Tensor:
+            return torch.nan_to_num(param, nan=0.0, posinf=0.0, neginf=0.0).sum().mul(0.0)
+
         for param in self.model.parameters():
-            if param.grad is None:  # Likely unused in loss computation
-                loss += 0 * param.sum()
+            if param.requires_grad:
+                loss = loss + _ddp_unused_term(param)
 
         if self.student_tokenizer is not None:
             for param in self.student_tokenizer.parameters():
-                if param.grad is None:
-                    loss += 0 * param.sum()
+                if param.requires_grad:
+                    loss = loss + _ddp_unused_term(param)
 
         if self.align_projector is not None:
             for param in self.align_projector.parameters():
-                if param.grad is None:
-                    loss += 0 * param.sum()
+                if param.requires_grad:
+                    loss = loss + _ddp_unused_term(param)
 
         return loss, (video_loss, act_loss)
 
