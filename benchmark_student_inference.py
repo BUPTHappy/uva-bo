@@ -9,7 +9,7 @@ import dill
 import hydra
 import numpy as np
 import torch
-from omegaconf import open_dict
+from omegaconf import OmegaConf, open_dict
 
 from unified_video_action.workspace.base_workspace import BaseWorkspace
 
@@ -22,8 +22,19 @@ def parse_args() -> argparse.Namespace:
         "--checkpoint",
         "-c",
         type=str,
-        required=True,
-        help="Path to ckpt file",
+        default=None,
+        help="Path to ckpt file (required unless --no-checkpoint is set)",
+    )
+    parser.add_argument(
+        "--config",
+        type=str,
+        default=None,
+        help="Path to composed config yaml (required with --no-checkpoint)",
+    )
+    parser.add_argument(
+        "--no-checkpoint",
+        action="store_true",
+        help="Benchmark randomly initialized model from config only",
     )
     parser.add_argument(
         "--device",
@@ -131,6 +142,37 @@ def _sync_if_needed(device: torch.device):
         torch.cuda.synchronize(device)
 
 
+def _load_cfg_and_policy(args):
+    if args.no_checkpoint:
+        if args.config is None:
+            raise ValueError("--config is required when --no-checkpoint is set.")
+        cfg = OmegaConf.load(args.config)
+        cls = hydra.utils.get_class(cfg.model._target_)
+        workspace = cls(cfg, output_dir=".")
+        workspace: BaseWorkspace
+        # No checkpoint path: use randomly initialized weights.
+        policy = workspace.model
+        ckpt_str = None
+    else:
+        if args.checkpoint is None:
+            raise ValueError("--checkpoint is required unless --no-checkpoint is set.")
+        ckpt_path = pathlib.Path(args.checkpoint)
+        payload = torch.load(
+            open(ckpt_path, "rb"), map_location="cpu", pickle_module=dill
+        )
+        cfg = payload["cfg"]
+        cls = hydra.utils.get_class(cfg.model._target_)
+        workspace = cls(cfg, output_dir=".")
+        workspace: BaseWorkspace
+        workspace.load_payload(payload, exclude_keys=None, include_keys=None)
+        if cfg.training.use_ema and hasattr(workspace, "ema_model"):
+            policy = workspace.ema_model
+        else:
+            policy = workspace.model
+        ckpt_str = str(ckpt_path)
+    return cfg, policy, ckpt_str
+
+
 def main():
     args = parse_args()
 
@@ -139,9 +181,7 @@ def main():
     np.random.seed(seed)
     torch.manual_seed(seed)
 
-    ckpt_path = pathlib.Path(args.checkpoint)
-    payload = torch.load(open(ckpt_path, "rb"), map_location="cpu", pickle_module=dill)
-    cfg = payload["cfg"]
+    cfg, policy, ckpt_str = _load_cfg_and_policy(args)
 
     with open_dict(cfg):
         if "autoregressive_model_params" in cfg.model.policy:
@@ -149,13 +189,6 @@ def main():
             cfg.model.policy.autoregressive_model_params.num_sampling_steps = str(
                 cfg.model.policy.autoregressive_model_params.num_sampling_steps
             )
-
-    cls = hydra.utils.get_class(cfg.model._target_)
-    workspace = cls(cfg, output_dir=".")
-    workspace: BaseWorkspace
-    workspace.load_payload(payload, exclude_keys=None, include_keys=None)
-
-    policy = workspace.ema_model if cfg.training.use_ema else workspace.model
     device = torch.device(args.device)
     policy = policy.eval().to(device)
     policy.reset()
@@ -207,7 +240,9 @@ def main():
 
     arr = np.array(times_ms, dtype=np.float64)
     stats = {
-        "checkpoint": str(ckpt_path),
+        "checkpoint": ckpt_str,
+        "config": args.config,
+        "no_checkpoint": bool(args.no_checkpoint),
         "device": str(device),
         "batch_size": args.batch_size,
         "n_obs_steps": n_obs_steps,
