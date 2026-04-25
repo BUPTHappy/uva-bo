@@ -165,6 +165,31 @@ def _load_cfg_and_policy(args):
                 )
         else:
             cfg = raw_cfg
+        if args.require_student_tokenizer:
+            with open_dict(cfg):
+                policy_cfg = cfg.model.policy
+                if "use_student_tokenizer" not in policy_cfg:
+                    policy_cfg.use_student_tokenizer = True
+                else:
+                    policy_cfg.use_student_tokenizer = True
+
+                if "student_tokenizer_params" not in policy_cfg or (
+                    policy_cfg.student_tokenizer_params is None
+                ):
+                    ar = policy_cfg.autoregressive_model_params
+                    policy_cfg.student_tokenizer_params = {
+                        "img_size": int(ar.img_size),
+                        "patch_size": int(ar.vae_stride),
+                        "in_channels": 3,
+                        "latent_channels": int(ar.vae_embed_dim),
+                        "hidden_dim": 384,
+                        "depth": 6,
+                        "num_heads": 8,
+                        "mlp_ratio": 4.0,
+                        "dropout": 0.0,
+                        "use_temporal_mixer": True,
+                        "temporal_kernel_size": 3,
+                    }
         cls = hydra.utils.get_class(cfg.model._target_)
         workspace = cls(cfg, output_dir=".")
         workspace: BaseWorkspace
