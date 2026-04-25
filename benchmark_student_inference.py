@@ -29,7 +29,13 @@ def parse_args() -> argparse.Namespace:
         "--config",
         type=str,
         default=None,
-        help="Path to composed config yaml (required with --no-checkpoint)",
+        help="Path to hydra top config yaml (required with --no-checkpoint)",
+    )
+    parser.add_argument(
+        "--override",
+        action="append",
+        default=[],
+        help="Hydra override for --no-checkpoint mode, can be repeated",
     )
     parser.add_argument(
         "--no-checkpoint",
@@ -146,7 +152,19 @@ def _load_cfg_and_policy(args):
     if args.no_checkpoint:
         if args.config is None:
             raise ValueError("--config is required when --no-checkpoint is set.")
-        cfg = OmegaConf.load(args.config)
+        config_path = pathlib.Path(args.config).expanduser().resolve()
+        raw_cfg = OmegaConf.load(str(config_path))
+        # If this yaml contains Hydra defaults and no composed `model` tree,
+        # compose it to materialize model/task groups.
+        if "model" not in raw_cfg and "defaults" in raw_cfg:
+            with hydra.initialize_config_dir(
+                version_base=None, config_dir=str(config_path.parent)
+            ):
+                cfg = hydra.compose(
+                    config_name=config_path.stem, overrides=list(args.override)
+                )
+        else:
+            cfg = raw_cfg
         cls = hydra.utils.get_class(cfg.model._target_)
         workspace = cls(cfg, output_dir=".")
         workspace: BaseWorkspace
