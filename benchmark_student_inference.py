@@ -212,6 +212,15 @@ def _load_cfg_and_policy(args):
                         "use_temporal_mixer": True,
                         "temporal_kernel_size": 3,
                     }
+        with open_dict(cfg):
+            # ensure policy.predict_action path is valid in config-only benchmark.
+            # some presets are video-centric and disable action prediction by default.
+            policy_cfg = cfg.model.policy
+            if (
+                "action_model_params" in policy_cfg
+                and "predict_action" in policy_cfg.action_model_params
+            ):
+                policy_cfg.action_model_params.predict_action = True
         cls = hydra.utils.get_class(cfg.model._target_)
         workspace = cls(cfg, output_dir=".")
         workspace: BaseWorkspace
