@@ -148,6 +148,28 @@ def _sync_if_needed(device: torch.device):
         torch.cuda.synchronize(device)
 
 
+def _bootstrap_normalizer_if_needed(policy, cfg, n_obs_steps: int):
+    if not hasattr(policy, "normalizer"):
+        return
+    if len(policy.normalizer.params_dict) > 0:
+        return
+    if str(getattr(policy, "normalizer_type", "none")) != "all":
+        return
+
+    fit_dict = {}
+    for key, attr in cfg.task.shape_meta["obs"].items():
+        if attr.get("type", "low_dim") == "rgb":
+            continue
+        shape = tuple(attr["shape"])
+        fit_dict[key] = torch.zeros(2, n_obs_steps, *shape, dtype=torch.float32)
+
+    action_dim = int(cfg.task.shape_meta["action"]["shape"][0])
+    fit_dict["action"] = torch.zeros(
+        2, int(getattr(policy, "n_action_steps", 8)), action_dim, dtype=torch.float32
+    )
+    policy.normalizer.fit(fit_dict, last_n_dims=1, mode="limits")
+
+
 def _load_cfg_and_policy(args):
     if args.no_checkpoint:
         if args.config is None:
@@ -249,6 +271,8 @@ def main():
             getattr(env_runner_cfg, "n_obs_steps", None) if env_runner_cfg is not None else None,
             16,
         )
+    if args.no_checkpoint:
+        _bootstrap_normalizer_if_needed(policy=policy, cfg=cfg, n_obs_steps=n_obs_steps)
 
     obs_dict = _build_dummy_obs(
         shape_meta=cfg.task.shape_meta,
