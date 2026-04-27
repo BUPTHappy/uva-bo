@@ -1,6 +1,14 @@
 #!/usr/bin/env python3
 import argparse
+import os
+import sys
 from types import SimpleNamespace
+
+# Ensure the repo root is importable when running as:
+# `python scripts/compare_student_vae_params.py`
+REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+if REPO_ROOT not in sys.path:
+    sys.path.insert(0, REPO_ROOT)
 
 from unified_video_action.model.common.student_tokenizer import StudentLatentTokenizer
 from unified_video_action.vae.vaekl import AutoencoderKL
