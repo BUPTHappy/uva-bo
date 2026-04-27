@@ -106,12 +106,8 @@ def main():
     )
     print()
     print(f"Student tokenizer total params      : {fmt(student_total)}")
-    print(f"Student tokenizer trainable params  : {fmt(student_trainable)}")
-    print(f"VAE encoder total params            : {fmt(vae_enc_total)}")
-    print(f"VAE quant_conv total params         : {fmt(vae_q_total)}")
-    print(f"VAE (encoder + quant_conv) total    : {fmt(vae_target_total)}")
-    print(f"VAE (encoder + quant_conv) trainable: {fmt(vae_target_trainable)}")
-    print(f"Student / VAE(encoder+quant) ratio  : {ratio:.4f}x")
+    print(f"VAE (encoder) total    : {fmt(vae_target_total)}")
+    print(f"Student / VAE ratio  : {ratio:.4f}x")
 
 
 if __name__ == "__main__":
