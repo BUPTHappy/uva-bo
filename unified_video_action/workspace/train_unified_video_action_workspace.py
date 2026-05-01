@@ -181,11 +181,13 @@ class TrainUnifiedVideoActionWorkspace(BaseWorkspace):
         )
 
         # resume training
+        resumed_from_ckpt = False
         if cfg.training.resume:
             lastest_ckpt_path = self.get_checkpoint_path()
             if lastest_ckpt_path.is_file():
                 accelerator.print(f"Resuming from checkpoint {lastest_ckpt_path}")
                 self.load_checkpoint(path=lastest_ckpt_path)
+                resumed_from_ckpt = True
 
         # configure ema
         ema: EMAModel = None
@@ -227,6 +229,41 @@ class TrainUnifiedVideoActionWorkspace(BaseWorkspace):
 
         if self.ema_model is not None:
             self.ema_model.to(device)
+
+        # Optional: run sim rollout once right after resume (before any training this run).
+        # `rollout_every` only applies after each full epoch of training, so it cannot
+        # trigger an earlier smoke test by itself.
+        if (
+            resumed_from_ckpt
+            and OmegaConf.select(
+                cfg.training, "rollout_immediately_after_resume", default=False
+            )
+            and cfg.model.policy.action_model_params.predict_action
+            and "env_runner" in cfg.task
+        ):
+            accelerator.wait_for_everyone()
+            policy = accelerator.unwrap_model(self.model)
+            if cfg.training.use_ema:
+                policy = self.ema_model
+            policy.eval()
+            if accelerator.is_main_process and env_runners is not None:
+                try:
+                    accelerator.print(
+                        "[rollout_immediately_after_resume] running env rollout (smoke test)..."
+                    )
+                    _ = env_rollout(cfg, env_runners, policy)
+                    accelerator.print(
+                        "[rollout_immediately_after_resume] finished without error."
+                    )
+                except Exception as exc:
+                    accelerator.print(
+                        f"[rollout_immediately_after_resume] failed: {exc!r}"
+                    )
+                    import traceback
+
+                    traceback.print_exc()
+            accelerator.wait_for_everyone()
+            policy.train()
 
         if cfg.training.debug:
             cfg.training.num_epochs = 2

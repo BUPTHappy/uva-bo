@@ -30,6 +30,9 @@ training:
   max_val_steps: null
   num_epochs: 3050
   resume: true
+  # If true and a checkpoint was loaded, run one sim rollout before the first training
+  # epoch this run (Hydra: +training.rollout_immediately_after_resume=true).
+  rollout_immediately_after_resume: false
   rollout_every: 50
   sample_every: 5
   seed: 42
