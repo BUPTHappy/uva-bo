@@ -19,6 +19,8 @@ OmegaConf.register_new_resolver("eval", eval, replace=True)
 
 import wandb
 
+os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
+
 if "WANDB_API_KEY" in os.environ:
     wandb.login(key=os.environ["WANDB_API_KEY"])
 

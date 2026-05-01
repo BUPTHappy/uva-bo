@@ -11,6 +11,7 @@ import math
 import dill
 import wandb.sdk.data_types.video as wv
 from unified_video_action.gym_util.async_vector_env import AsyncVectorEnv
+from unified_video_action.gym_util.sync_vector_env import SyncVectorEnv
 from unified_video_action.gym_util.multistep_wrapper import MultiStepWrapper
 from unified_video_action.gym_util.video_recording_wrapper import (
     VideoRecordingWrapper,
@@ -241,7 +242,11 @@ class LiberoImageRunner(BaseImageRunner):
             env_prefixs.append("test/%s_" % env_meta["bddl_file"].split("/")[-1][:-5])
             env_init_fn_dills.append(dill.dumps(init_fn))
 
-        env = AsyncVectorEnv(env_fns, dummy_env_fn=dummy_env_fn, shared_memory=False)
+        if n_envs == 1:
+            # Single-env eval is more stable in-process and avoids fork/pipe EOF failures.
+            env = SyncVectorEnv(env_fns)
+        else:
+            env = AsyncVectorEnv(env_fns, dummy_env_fn=dummy_env_fn, shared_memory=False)
 
         self.env_meta = env_meta
         self.env = env

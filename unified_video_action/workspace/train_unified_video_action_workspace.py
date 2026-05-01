@@ -193,10 +193,14 @@ class TrainUnifiedVideoActionWorkspace(BaseWorkspace):
             ema = hydra.utils.instantiate(cfg.ema, model=self.ema_model)
 
         # configure env
+        env_runners = None
         if (
             cfg.model.policy.action_model_params.predict_action
             and "env_runner" in cfg.task
+            and accelerator.is_main_process
         ):
+            # Rollout envs are heavyweight and should only be created
+            # on the main process in distributed training.
             env_runners = load_env_runner(cfg, self.output_dir)
 
         # configure checkpoint
@@ -361,7 +365,11 @@ class TrainUnifiedVideoActionWorkspace(BaseWorkspace):
                 cfg.model.policy.action_model_params.predict_action
                 and "env_runner" in cfg.task
             ):
-                if (self.epoch % cfg.training.rollout_every) == 0:
+                if (
+                    accelerator.is_main_process
+                    and env_runners is not None
+                    and (self.epoch % cfg.training.rollout_every) == 0
+                ):
                     runner_log = env_rollout(cfg, env_runners, policy)
                     step_log.update(runner_log)
 
