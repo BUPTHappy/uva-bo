@@ -4,9 +4,16 @@ Training:
 python train.py --config-name=train_diffusion_lowdim_workspace
 """
 
-import torch
 import os
 import sys
+
+# Before importing torch / env stacks: stable defaults for headless sim + tokenizers.
+os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
+if sys.platform.startswith("linux"):
+    # MuJoCo offscreen on many GPU servers defaults poorly; override with MUJOCO_GL=osmesa if needed.
+    os.environ.setdefault("MUJOCO_GL", "egl")
+
+import torch
 import hydra
 from omegaconf import OmegaConf
 import pathlib
@@ -18,8 +25,6 @@ OmegaConf.register_new_resolver("eval", eval, replace=True)
 
 
 import wandb
-
-os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
 
 if "WANDB_API_KEY" in os.environ:
     wandb.login(key=os.environ["WANDB_API_KEY"])

@@ -365,13 +365,23 @@ class TrainUnifiedVideoActionWorkspace(BaseWorkspace):
                 cfg.model.policy.action_model_params.predict_action
                 and "env_runner" in cfg.task
             ):
+                # All ranks must wait: otherwise non-main processes enter the next
+                # epoch's backward while rank0 is still inside env_rollout (DDP deadlock / UB).
+                accelerator.wait_for_everyone()
                 if (
                     accelerator.is_main_process
                     and env_runners is not None
                     and (self.epoch % cfg.training.rollout_every) == 0
                 ):
-                    runner_log = env_rollout(cfg, env_runners, policy)
-                    step_log.update(runner_log)
+                    try:
+                        runner_log = env_rollout(cfg, env_runners, policy)
+                        step_log.update(runner_log)
+                    except Exception as exc:
+                        accelerator.print(f"[rollout] skipped due to error: {exc!r}")
+                        import traceback
+
+                        traceback.print_exc()
+                accelerator.wait_for_everyone()
 
             # ========= checkpoint =========
             if (

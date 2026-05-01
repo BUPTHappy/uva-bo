@@ -276,9 +276,6 @@ class UnifiedVideoActionPolicy(BaseImagePolicy):
             if "umi" in self.task_name:
                 text_latents = language_goal
             else:
-                print("predict_action language_goal: ", language_goal)
-                print(self.task_name, "max_length", self.max_length)
-
                 if self.language_emb_model == "clip":
                     text_tokens = self.tokenizer(
                         language_goal,
