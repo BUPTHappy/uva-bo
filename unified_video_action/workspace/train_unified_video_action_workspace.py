@@ -38,6 +38,20 @@ from unified_video_action.utils.data_utils import resize_image
 OmegaConf.register_new_resolver("eval", eval, replace=True)
 
 
+def _cfg_truthy(cfg: OmegaConf, dot_key: str, default: bool = False) -> bool:
+    """Hydra / shell overrides may yield bool, int, or string; normalize for flags."""
+    v = OmegaConf.select(cfg, dot_key, default=None)
+    if v is None:
+        return default
+    if isinstance(v, bool):
+        return v
+    if isinstance(v, (int, float)):
+        return bool(v)
+    if isinstance(v, str):
+        return v.strip().lower() in ("1", "true", "yes", "on", "y")
+    return bool(v)
+
+
 class TrainUnifiedVideoActionWorkspace(BaseWorkspace):
     include_keys = ["global_step", "epoch"]
 
@@ -189,6 +203,16 @@ class TrainUnifiedVideoActionWorkspace(BaseWorkspace):
                 self.load_checkpoint(path=lastest_ckpt_path)
                 resumed_from_ckpt = True
 
+        _rollout_immediately_after_resume = _cfg_truthy(
+            self.cfg, "training.rollout_immediately_after_resume", default=False
+        )
+        if accelerator.is_main_process:
+            print(
+                "[UVA] rollout_immediately_after_resume="
+                f"{_rollout_immediately_after_resume} resumed_from_ckpt={resumed_from_ckpt}",
+                flush=True,
+            )
+
         # configure ema
         ema: EMAModel = None
         if cfg.training.use_ema:
@@ -235,9 +259,7 @@ class TrainUnifiedVideoActionWorkspace(BaseWorkspace):
         # trigger an earlier smoke test by itself.
         if (
             resumed_from_ckpt
-            and OmegaConf.select(
-                cfg.training, "rollout_immediately_after_resume", default=False
-            )
+            and _rollout_immediately_after_resume
             and cfg.model.policy.action_model_params.predict_action
             and "env_runner" in cfg.task
         ):
@@ -248,16 +270,19 @@ class TrainUnifiedVideoActionWorkspace(BaseWorkspace):
             policy.eval()
             if accelerator.is_main_process and env_runners is not None:
                 try:
-                    accelerator.print(
-                        "[rollout_immediately_after_resume] running env rollout (smoke test)..."
+                    print(
+                        "[rollout_immediately_after_resume] running env rollout (smoke test)...",
+                        flush=True,
                     )
                     _ = env_rollout(cfg, env_runners, policy)
-                    accelerator.print(
-                        "[rollout_immediately_after_resume] finished without error."
+                    print(
+                        "[rollout_immediately_after_resume] finished without error.",
+                        flush=True,
                     )
                 except Exception as exc:
-                    accelerator.print(
-                        f"[rollout_immediately_after_resume] failed: {exc!r}"
+                    print(
+                        f"[rollout_immediately_after_resume] failed: {exc!r}",
+                        flush=True,
                     )
                     import traceback
 
