@@ -11,6 +11,23 @@ from unified_video_action.utils.language_model import get_text_model
 import numpy as np
 from copy import deepcopy
 
+# Built-in prompts for CLIP when `language_goals` is omitted in config. Extend as needed.
+_DEFAULT_LANGUAGE_GOALS: dict[str, list[str]] = {
+    "cup_arrangement_0": [
+        "pick up an espresso cup and place it onto a saucer with the cup handle oriented to the left of the robot"
+    ],
+    "towel_folding_0": [
+        "grasp the left edge of the towel and move it to the right, folding it in half"
+    ],
+    "mouse_arrangement_0": ["pick up the mouse and place it on the mouse pad"],
+    "dish_washing_0": [
+        "Wash dishes, rinse, and place them in the drying rack or stack them neatly."
+    ],
+    "cloth_folding_0": [
+        "Fold the cloth by aligning edges and pressing flat to complete the fold."
+    ],
+}
+
 
 class UmiMultiDataset(Dataset[batch_type]):
     """
@@ -42,6 +59,7 @@ class UmiMultiDataset(Dataset[batch_type]):
         dataset_configs: Union[dict[str, dict[str, Any]], DictConfig],
         language_emb_model: Optional[str],
         normalizer_type: Optional[str],
+        language_goals: Optional[Union[dict[str, list[str]], DictConfig]] = None,
         **base_config: Union[dict[str, Any], DictConfig],
     ):
 
@@ -94,10 +112,25 @@ class UmiMultiDataset(Dataset[batch_type]):
         seed = 42
         self.rng: np.random.Generator = np.random.default_rng(seed)
         self.language_emb_model = language_emb_model
+        merged_goals: dict[str, list[str]] = dict(_DEFAULT_LANGUAGE_GOALS)
+        if language_goals is not None:
+            lg = language_goals
+            if isinstance(lg, DictConfig):
+                lg = cast(dict[str, Any], OmegaConf.to_container(lg))
+            for name, texts in lg.items():
+                merged_goals[str(name)] = [str(t) for t in texts]
+        self._language_goals: dict[str, list[str]] = {}
+        for name in self.dataset_configs:
+            if name not in merged_goals:
+                raise ValueError(
+                    f"No language instruction for dataset '{name}'. "
+                    "Add it under task.dataset.language_goals in your Hydra config, "
+                    "or extend _DEFAULT_LANGUAGE_GOALS in umi_multi_dataset.py."
+                )
+            self._language_goals[name] = merged_goals[name]
+
         self.language_latents: dict[str, list[torch.Tensor]] = {
-            "cup_arrangement_0": [],
-            "towel_folding_0": [],
-            "mouse_arrangement_0": [],
+            name: [] for name in self.dataset_configs
         }
 
         if self.language_emb_model is not None:
@@ -115,23 +148,26 @@ class UmiMultiDataset(Dataset[batch_type]):
         dataset_idx, data_idx = self.index_pool[idx]
         data_dict = self.datasets[dataset_idx][data_idx]
         data_dict["ids"] = torch.tensor([idx])
-        data_dict["language_latents"] = self.rng.choice(
-            self.language_latents[data_dict["dataset_name"]], size=1, replace=False
-        )[0]
+        dataset_name = data_dict["dataset_name"]
         del data_dict["dataset_name"]
+        if self.language_emb_model is not None:
+            options = self.language_latents[dataset_name]
+            if len(options) == 0:
+                raise RuntimeError(
+                    f"language_latents empty for '{dataset_name}'; check get_language_latent()."
+                )
+            data_dict["language_latents"] = self.rng.choice(
+                options, size=1, replace=False
+            )[0]
         return data_dict
 
     def get_language_latent(self):
-        language_goals = {'cup_arrangement_0': ['pick up an espresso cup and place it onto a saucer with the cup handle oriented to the left of the robot'],
-                            'towel_folding_0': ['grasp the left edge of the towel and move it to the right, folding it in half'],
-                            'mouse_arrangement_0': ['pick up the mouse and place it on the mouse pad']}
-
         self.text_model, self.tokenizer, max_length = get_text_model(
             "umi", self.language_emb_model
         )
 
         with torch.no_grad():
-            for dataset_name, language_goal in language_goals.items():
+            for dataset_name, language_goal in self._language_goals.items():
                 for language_goal_text in language_goal:
                     language_tokens = self.tokenizer(
                         [language_goal_text],

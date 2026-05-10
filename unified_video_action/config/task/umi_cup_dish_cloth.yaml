@@ -1,0 +1,99 @@
+defaults:
+  - umi_lazy@dataset
+  - _self_
+
+name: umi
+task_type: multiple_datasets
+task_modes: []
+
+dataset:
+  _target_: unified_video_action.dataset.umi_multi_dataset.UmiMultiDataset
+
+  dataset_root_dir: ???
+  used_episode_indices_file: ""
+
+  dataset_configs:
+    cup_arrangement_0:
+      include_episode_num: -1
+      mask_mirror: true
+    dish_washing_0:
+      include_episode_num: -1
+      mask_mirror: false
+    cloth_folding_0:
+      include_episode_num: -1
+      mask_mirror: false
+
+  language_goals:
+    cup_arrangement_0:
+      - "pick up an espresso cup and place it onto a saucer with the cup handle oriented to the left of the robot"
+    dish_washing_0:
+      - "wash dishes, rinse, and place them in the drying rack"
+    cloth_folding_0:
+      - "fold the cloth by aligning edges and completing the fold"
+
+  zarr_path: ""
+  normalizer_type: none
+  language_emb_model: clip
+
+camera_obs_latency: 0.125
+robot_obs_latency: 0.0001
+gripper_obs_latency: 0.02
+dataset_frequeny: 0
+obs_down_sample_steps: 3
+
+low_dim_obs_horizon: 32
+img_obs_horizon: 32
+action_horizon: 32
+ignore_proprioception: false
+
+shape_meta: &shape_meta
+  image_resolution: 224
+  obs:
+    camera0_rgb:
+      shape: [3, 224, 224]
+      horizon: ${task.img_obs_horizon}
+      latency_steps: 0
+      down_sample_steps: ${task.obs_down_sample_steps}
+      type: rgb
+      ignore_by_policy: false
+    robot0_eef_pos:
+      shape: [3]
+      horizon: ${task.low_dim_obs_horizon}
+      latency_steps: ${eval:'(${task.camera_obs_latency} - ${task.robot_obs_latency}) * ${task.dataset_frequeny}'}
+      down_sample_steps: ${task.obs_down_sample_steps}
+      type: low_dim
+      ignore_by_policy: ${task.ignore_proprioception}
+    robot0_eef_rot_axis_angle:
+      raw_shape: [3]
+      shape: [6]
+      horizon: ${task.low_dim_obs_horizon}
+      latency_steps: ${eval:'(${task.camera_obs_latency} - ${task.robot_obs_latency}) * ${task.dataset_frequeny}'}
+      down_sample_steps: ${task.obs_down_sample_steps}
+      type: low_dim
+      rotation_rep: rotation_6d
+      ignore_by_policy: ${task.ignore_proprioception}
+    robot0_gripper_width:
+      shape: [1]
+      horizon: ${task.low_dim_obs_horizon}
+      latency_steps: ${eval:'(${task.camera_obs_latency} - ${task.gripper_obs_latency}) * ${task.dataset_frequeny}'}
+      down_sample_steps: ${task.obs_down_sample_steps}
+      type: low_dim
+      ignore_by_policy: ${task.ignore_proprioception}
+    robot0_eef_rot_axis_angle_wrt_start:
+      raw_shape: [3]
+      shape: [6]
+      horizon: ${task.low_dim_obs_horizon}
+      latency_steps: ${eval:'(${task.camera_obs_latency} - ${task.robot_obs_latency}) * ${task.dataset_frequeny}'}
+      down_sample_steps: ${task.obs_down_sample_steps}
+      type: low_dim
+      ignore_by_policy: ${task.ignore_proprioception}
+  action:
+    shape: [10]
+    horizon: ${task.action_horizon}
+    latency_steps: 0
+    down_sample_steps: ${task.obs_down_sample_steps}
+    rotation_rep: rotation_6d
+
+pose_repr: &pose_repr
+  obs_pose_repr: relative
+  action_pose_repr: relative

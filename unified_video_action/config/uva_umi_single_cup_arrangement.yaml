@@ -2,7 +2,7 @@ name: uva
 
 defaults:
   - _self_
-  - task: libero10
+  - task: umi_single_cup_arrangement
   - model: uva
 
 dataloader:
@@ -20,7 +20,7 @@ val_dataloader:
   shuffle: false
 
 training:
-  checkpoint_every: 50
+  checkpoint_every: 1
   debug: false
   device: cuda:0
   gradient_accumulate_every: 1
@@ -30,26 +30,24 @@ training:
   max_val_steps: null
   num_epochs: 3050
   resume: true
-  # If true and a checkpoint was loaded, run one sim rollout before the first training
-  # epoch this run. Key already exists — override without +, e.g.:
-  #   training.rollout_immediately_after_resume=true
   rollout_immediately_after_resume: false
-  rollout_every: 50
+  rollout_every: 1
   sample_every: 5
   seed: 42
   tqdm_interval_sec: 1.0
   use_ema: true
   val_every: 1
-  mixed_precision: 'fp16'
-  
+  mixed_precision: bf16
+  deepspeed_config: null
+
 checkpoint:
   save_last_ckpt: true
   save_last_snapshot: false
   topk:
-    monitor_key: test_mean_score
-    format_str: epoch={epoch:04d}-test_mean_score={test_mean_score:.3f}.ckpt
-    k: 1
-    mode: max
+    monitor_key: val_action_l2_full
+    format_str: epoch={epoch:04d}-val_action_l2_full={val_action_l2_full:.3f}.ckpt
+    k: 5
+    mode: min
 
 ema:
   _target_: unified_video_action.model.autoregressive.ema_model.EMAModel
@@ -63,14 +61,13 @@ logging:
   group: null
   id: null
   mode: online
-  name: train_uva_libero10
+  name: train_uva_umi_cup_arrangement_0
   project: unified_video_action
   resume: true
   tags:
-  - train_uva_libero10
-  - libero10
-  - default
+  - train_uva_umi
+  - cup_arrangement_0
 
 multi_run:
-  run_dir: data/outputs/train_uva_libero10
-  wandb_name_base: train_uva_libero10
+  run_dir: data/outputs/train_uva_umi_cup_arrangement_0
+  wandb_name_base: train_uva_umi_cup_arrangement_0

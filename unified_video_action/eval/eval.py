@@ -6,6 +6,7 @@ import os
 from einops import rearrange
 import torch.nn.functional as F
 import wandb
+from omegaconf import OmegaConf
 
 from unified_video_action.fvd.fvd import get_fvd_logits, frechet_distance
 from unified_video_action.fvd.download import load_i3d_pretrained
@@ -264,6 +265,9 @@ def test_action_l2(
     plot_actions=False,
 ):
     action_l2_distances = []
+    action_l2_full = []
+    eef_traj_errors = []
+    final_state_errors = []
 
     with torch.no_grad():
         for n, batch in enumerate(loader):
@@ -332,19 +336,46 @@ def test_action_l2(
                     actions=trajectory,
                 )
 
-                ## calculate l2 distance between the predicted action and ground truth action
-                l2_distance = torch.sqrt(
-                    torch.sum((trajectory[:, :, :9] - act_out[:, :, :9]) ** 2, dim=-1)
+                diff = trajectory - act_out
+                d = diff.shape[-1]
+                # Pose (first 9 dims when present): matches historical UMI / rotation_6d head.
+                pose_dims = min(9, d)
+                l2_pose = torch.sqrt((diff[..., :pose_dims] ** 2).sum(dim=-1))
+                action_l2_distances.append(l2_pose.mean())
+                # Full action vector L2 (mean over batch and time).
+                action_l2_full.append(torch.sqrt((diff**2).sum(dim=-1)).mean())
+                # End-effector position trajectory error (first 3 dims = xyz in UMI actions).
+                eef_traj_errors.append(
+                    torch.sqrt((diff[..., :3] ** 2).sum(dim=-1)).mean()
                 )
-                action_l2_distances.append(l2_distance.mean())
+                # Final predicted state vs ground truth (last timestep, full action).
+                final_state_errors.append(
+                    torch.sqrt((diff[:, -1] ** 2).sum(dim=-1)).mean()
+                )
 
             if cfg.training.debug:
                 break
 
+            max_val = OmegaConf.select(cfg, "training.max_val_steps")
+            if max_val is not None and (n + 1) >= int(max_val):
+                break
+
     log_data = dict()
-    if cfg.model.policy.action_model_params.predict_action:
+    if cfg.model.policy.action_model_params.predict_action and len(action_l2_distances) > 0:
         log_data[f"{name_label}val_action_l2_distances"] = (
             torch.stack(action_l2_distances).mean().item()
         )
+        if len(action_l2_full) > 0:
+            log_data[f"{name_label}val_action_l2_full"] = (
+                torch.stack(action_l2_full).mean().item()
+            )
+        if len(eef_traj_errors) > 0:
+            log_data[f"{name_label}val_eef_traj_error"] = (
+                torch.stack(eef_traj_errors).mean().item()
+            )
+        if len(final_state_errors) > 0:
+            log_data[f"{name_label}val_final_state_l2"] = (
+                torch.stack(final_state_errors).mean().item()
+            )
 
     return log_data
