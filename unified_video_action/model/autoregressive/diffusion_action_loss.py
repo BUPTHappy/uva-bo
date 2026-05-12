@@ -1,5 +1,6 @@
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from einops import rearrange
 
 from unified_video_action.model.autoregressive.diffusion import create_diffusion
@@ -36,6 +37,7 @@ class DiffActLoss(nn.Module):
             self.w = 16
             self.h = 16
             self.num_frames = 4
+            # Fallback temporal length for sample() when horizon is unknown (legacy Libero-style).
             self.num_actions = 16
 
             # Single convolutional layer for spatial processing
@@ -51,8 +53,6 @@ class DiffActLoss(nn.Module):
                 nn.ReLU(),
                 nn.Linear(z_channels, z_channels),  # Predict latents for all actions
             )
-
-            self.interpolate = nn.Linear(self.num_frames, self.num_actions)
 
             self.refine = nn.Sequential(
                 nn.Linear(z_channels, z_channels),
@@ -119,7 +119,9 @@ class DiffActLoss(nn.Module):
 
             z = rearrange(z, "(b t) c -> b t c", t=self.n_frames)
             z = z.permute(0, 2, 1)
-            z = self.interpolate(z)
+            z = F.interpolate(
+                z, size=seq_len, mode="linear", align_corners=False
+            )
             z = z.permute(0, 2, 1)
             z = self.refine(z)
             
@@ -165,7 +167,14 @@ class DiffActLoss(nn.Module):
 
         return total_loss
 
-    def sample(self, z, temperature=1.0, cfg=1.0, text_latents=None):
+    def sample(
+        self,
+        z,
+        temperature=1.0,
+        cfg=1.0,
+        text_latents=None,
+        action_seq_len=None,
+    ):
         if self.act_model_type == "conv_fc":
             z = rearrange(z, "b (t s) c -> (b t) s c", t=self.n_frames)
             z = rearrange(z, "b (w h) c -> b w h c", w=self.w)
@@ -176,7 +185,8 @@ class DiffActLoss(nn.Module):
 
             z = rearrange(z, "(b t) c -> b t c", t=self.n_frames)
             z = z.permute(0, 2, 1)
-            z = self.interpolate(z)
+            out_len = action_seq_len if action_seq_len is not None else self.num_actions
+            z = F.interpolate(z, size=out_len, mode="linear", align_corners=False)
             z = z.permute(0, 2, 1)
             z = self.refine(z)
             

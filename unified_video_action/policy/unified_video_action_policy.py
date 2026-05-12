@@ -61,6 +61,23 @@ class UnifiedVideoActionPolicy(BaseImagePolicy):
 
         self.use_history_action = kwargs["use_history_action"]
         self.use_proprioception = kwargs["use_proprioception"]
+
+        # Action diffusion temporal length must match get_trajectory(..., shift_action).
+        # UMI uses 8 RGB frames per sample; shape_meta often lists 32 for camera horizon.
+        dac = kwargs.get("diffusion_action_seq_len", None)
+        if dac is not None:
+            self.diffusion_action_seq_len = int(dac)
+        elif task_name and "umi" in task_name and shift_action and not self.use_history_action:
+            self.diffusion_action_seq_len = int(shape_meta.action.horizon - 8 // 2)
+        elif shift_action and not self.use_history_action:
+            img_t = 4
+            for _k, v in shape_meta.obs.items():
+                if getattr(v, "type", None) == "rgb":
+                    img_t = int(v.horizon)
+                    break
+            self.diffusion_action_seq_len = int(shape_meta.action.horizon - img_t // 2)
+        else:
+            self.diffusion_action_seq_len = None
         self.use_student_tokenizer = bool(kwargs.get("use_student_tokenizer", False))
         self.student_tokenizer_params = kwargs.get("student_tokenizer_params", None)
         self.align_params = kwargs.get("align_params", {})
@@ -343,6 +360,7 @@ class UnifiedVideoActionPolicy(BaseImagePolicy):
             proprioception_input=proprioception_input,
             task_mode="policy_model",
             vae_model=self.vae_model,
+            action_diffusion_seq_len=self.diffusion_action_seq_len,
         )
 
         # unnormalize prediction

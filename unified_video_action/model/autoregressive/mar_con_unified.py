@@ -958,6 +958,7 @@ class MAR(nn.Module):
         task_mode=None,
         vae_model=None,
         x=None,
+        action_diffusion_seq_len=None,
     ):
         self.device = cond.device
         B, T, C, H, W = cond.size()
@@ -1036,8 +1037,17 @@ class MAR(nn.Module):
 
                 if self.predict_action:
                     act_cfg = 1.0
+                    act_seq_len = None
+                    if nactions is not None:
+                        act_seq_len = nactions.shape[1]
+                    elif action_diffusion_seq_len is not None:
+                        act_seq_len = int(action_diffusion_seq_len)
                     sampled_token_latent_act = self.diffactloss.sample(
-                        z, temperature, cfg=act_cfg, text_latents=text_latents
+                        z,
+                        temperature,
+                        cfg=act_cfg,
+                        text_latents=text_latents,
+                        action_seq_len=act_seq_len,
                     )
                 else:
                     sampled_token_latent_act = None
