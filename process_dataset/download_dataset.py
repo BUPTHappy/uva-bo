@@ -1,3 +1,12 @@
+"""
+UMI zarr pipeline (run from repo root so `uva/umi_data/...` paths work):
+
+1) python process_dataset/download_dataset.py --data_dir uva/umi_data
+   -> uva/umi_data/zip/*.zarr.zip and uva/umi_data/lz4/*.zarr.tar.lz4
+
+2) python process_dataset/extract_umi_data.py cup_arrangement_0,dish_washing_0,cloth_folding_0
+   -> uva/umi_data/zarr/<name>.zarr
+"""
 import os
 import sys
 import subprocess
