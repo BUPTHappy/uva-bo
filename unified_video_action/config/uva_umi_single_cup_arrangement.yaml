@@ -5,6 +5,7 @@ defaults:
   - task: umi_single_cup_arrangement
   - model: uva
 
+# UMI uses task.dataset.dataloader_cfg; train workspace copies these keys into it before building loaders.
 dataloader:
   batch_size: 32
   num_workers: 8

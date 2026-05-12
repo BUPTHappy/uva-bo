@@ -10,7 +10,7 @@ if __name__ == "__main__":
 import os
 import hydra
 import torch
-from omegaconf import OmegaConf
+from omegaconf import OmegaConf, open_dict
 import pathlib
 import copy
 import random
@@ -127,6 +127,23 @@ class TrainUnifiedVideoActionWorkspace(BaseWorkspace):
             )
 
         if cfg.task.task_type == "multiple_datasets":
+            # UmiMultiDataset uses task.dataset.dataloader_cfg (umi_lazy default batch_size=56),
+            # not cfg.dataloader. Mirror top-level dataloader so overrides like
+            # dataloader.batch_size=8 take effect (same mental model as single_dataset tasks).
+            dataloader_cfg = OmegaConf.select(cfg, "task.dataset.dataloader_cfg")
+            if dataloader_cfg is not None:
+                with open_dict(cfg):
+                    for key in (
+                        "batch_size",
+                        "num_workers",
+                        "pin_memory",
+                        "shuffle",
+                        "persistent_workers",
+                    ):
+                        if key in cfg.dataloader:
+                            cfg.task.dataset.dataloader_cfg[key] = cfg.dataloader[
+                                key
+                            ]
             dataset: UmiMultiDataset
             dataset = hydra.utils.instantiate(cfg.task.dataset)
             train_dataloader = dataset.get_dataloader()
