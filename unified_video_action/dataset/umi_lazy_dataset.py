@@ -236,6 +236,15 @@ class UmiLazyDataset(BaseLazyDataset):
                     # No wrt_start_entry_meta, so no relative poses wrt episode start
                     pass
 
+            wrt_key = f"robot{i}_eef_rot_axis_angle_wrt_start"
+            if wrt_key in self.output_data_meta and wrt_key not in processed_data_dict:
+                # Some UMI zarrs (e.g. bimanual dish_washing) omit demo_start_pose; MAR still
+                # expects this low-dim slot when listed in output_data_meta.
+                wrt_meta = self.output_data_meta[wrt_key]
+                processed_data_dict[wrt_key] = np.zeros(
+                    (wrt_meta.length, *wrt_meta.shape), dtype=np.float32
+                )
+
         processed_data_dict["action"] = action
         processed_data_dict["img_indices"] = data_dict["img_indices"][
             :, None
