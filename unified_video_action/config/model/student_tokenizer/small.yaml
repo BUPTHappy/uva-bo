@@ -1,5 +1,5 @@
 # @package _global_.model.policy
-# ~30M params (~0.43x KL-VAE). Matches the manual CLI overrides used in recent libero10 runs.
+# Smaller ViT encoder than encoder-matched preset (~0.6× frozen KL-VAE encoder + quant_conv).
 defaults:
   - _base
 
@@ -8,8 +8,8 @@ student_tokenizer_params:
   patch_size: 16
   in_channels: 3
   latent_channels: 16
-  hidden_dim: 384
-  depth: 6
+  hidden_dim: 304
+  depth: 5
   num_heads: 8
   mlp_ratio: 4.0
   dropout: 0.0

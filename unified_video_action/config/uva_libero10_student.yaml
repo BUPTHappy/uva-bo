@@ -4,7 +4,7 @@ name: uva_libero10_student
 
 defaults:
   - uva_libero10
-  - override /model/student_tokenizer: small
+  - override /model/student_tokenizer: equal
 
 model:
   policy:

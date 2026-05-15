@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""Compare parameter counts for student tokenizer presets vs the frozen KL-VAE.
+"""Compare student tokenizer presets vs the **frozen KL-VAE encoder pathway**.
 
-**Ground truth.** When PyTorch is available, the script counts real `torch.nn.Module`
-parameters (`nn.TransformerEncoderLayer` rounding etc.). Offline analytical counts
-approximate sizes; analytical VAE totals use the same Encoder/Decoder layout as
-`unified_video_action/vae/vaekl.py`, including Decoder's default **no spatial
-self-attention in upsampling** (`attn_resolutions=()`, unlike the Encoder tail).
+This repo uses encoder latents distilled from observations; sizing is referenced to
+``encoder`` + ``quant_conv`` (**Enc**), not decoder / full AE.
+
+Torch counts modules when available; analytical VAE layout matches ``vaekl.py`` Decoder
+defaults (no spatial self-attention in upsampling stages).
 
 Usage:
   python scripts/compare_student_tokenizer_sizes.py
@@ -25,22 +25,22 @@ if str(ROOT) not in sys.path:
 
 PRESETS = {
     "small": {
+        "hidden_dim": 304,
+        "depth": 5,
+        "num_heads": 8,
+        "note": "compact (~0.6× Enc)",
+    },
+    "equal": {
         "hidden_dim": 384,
         "depth": 6,
         "num_heads": 8,
-        "note": "manual CLI baseline (~0.45× full frozen VAE)",
-    },
-    "equal": {
-        "hidden_dim": 416,
-        "depth": 21,
-        "num_heads": 8,
-        "note": "student params ~matched to full frozen VAE (~1.00×)",
+        "note": "~parity with frozen Enc+quant (~1.0× Enc)",
     },
     "large": {
-        "hidden_dim": 640,
-        "depth": 14,
+        "hidden_dim": 464,
+        "depth": 9,
         "num_heads": 8,
-        "note": "scaled-up student (~1.84× full frozen VAE)",
+        "note": "scaled (~1.8× Enc)",
     },
 }
 
@@ -119,11 +119,8 @@ def count_attn(c: int) -> int:
 
 
 def count_vae_analytical() -> dict[str, int]:
-    """Match `AutoencoderKL` + `Encoder` / `Decoder` defaults in vaekl.py.
+    """Match ``AutoencoderKL`` + Encoder / Decoder defaults in ``vaekl.py``."""
 
-    Encoder uses attn at spatial scale 16; Decoder default `attn_resolutions=()`
-    keeps attention only in the mid block — not in upsampling stages.
-    """
     ch = 128
     ch_mult = (1, 1, 2, 2, 4)
     z = 16
@@ -206,7 +203,6 @@ def count_with_torch(student_params: dict) -> dict[str, int] | None:
         return sum(p.numel() for p in module.parameters())
 
     student = StudentLatentTokenizer(**student_params)
-    # `Decoder.__init__` prints z-shape; keep this script quiet for batch runs.
     with contextlib.redirect_stdout(io.StringIO()):
         vae = AutoencoderKL(autoencoder_path=None, ddconfig=OmegaConf.create(VAE_DDCONFIG))
     hidden_dim = int(student_params["hidden_dim"])
@@ -218,11 +214,12 @@ def count_with_torch(student_params: dict) -> dict[str, int] | None:
         torch.nn.SiLU(),
         torch.nn.Linear(ALIGN_PROJECTOR_DIM, latent_channels),
     )
+    encq = nparams(vae.encoder) + nparams(vae.quant_conv)
     return {
         "student": nparams(student),
         "align_projector": nparams(projector),
         "student_total": nparams(student) + nparams(projector),
-        "vae_encoder_quant": nparams(vae.encoder) + nparams(vae.quant_conv),
+        "vae_encoder_quant": encq,
         "vae_decoder": nparams(vae.decoder) + nparams(vae.post_quant_conv),
         "vae_total": nparams(vae),
         "backend": "torch",
@@ -251,14 +248,12 @@ def summarize_size(size: str, use_torch: bool) -> dict:
             **vae,
             "backend": "analytical",
         }
+    enc = counts["vae_encoder_quant"]
     counts["size"] = size
     counts["note"] = PRESETS[size]["note"]
     counts["student_config"] = student_params
-    counts["ratio_student_vs_vae"] = counts["student"] / counts["vae_total"]
-    counts["ratio_student_total_vs_vae"] = counts["student_total"] / counts["vae_total"]
-    counts["ratio_student_vs_vae_encoder"] = (
-        counts["student"] / counts["vae_encoder_quant"]
-    )
+    counts["ratio_student_vs_encoder"] = counts["student"] / enc
+    counts["ratio_student_total_vs_encoder"] = counts["student_total"] / enc
     return counts
 
 
@@ -268,10 +263,15 @@ def _fmt_m(n: int) -> str:
 
 def print_report(rows: list[dict]) -> None:
     backend = rows[0]["backend"]
-    print(f"Parameter backend: {backend}\n")
+    enc_ref = rows[0]["vae_encoder_quant"]
+    tot_ref = rows[0]["vae_total"]
+    print(f"Parameter backend: {backend}")
+    print(
+        "(**Enc** = frozen VAE `encoder` + `quant_conv`, the pathway used into latents.)\n"
+    )
     header = (
-        f"{'preset':<6} {'student':>14} {'+projector':>14} {'vs VAE':>8} "
-        f"{'VAE enc':>14} {'VAE full':>14}  note"
+        f"{'preset':<6} {'student':>14} {'+projector':>14} {'vs Enc':>8} "
+        f"{'Enc+quant ref':>16} {'VAE full':>14}  note"
     )
     print(header)
     print("-" * len(header))
@@ -279,17 +279,11 @@ def print_report(rows: list[dict]) -> None:
         print(
             f"{row['size']:<6} {_fmt_m(row['student']):>14} "
             f"{_fmt_m(row['student_total']):>14} "
-            f"{row['ratio_student_vs_vae']:>7.2f}x "
-            f"{_fmt_m(row['vae_encoder_quant']):>14} {_fmt_m(row['vae_total']):>14}  "
+            f"{row['ratio_student_vs_encoder']:>7.2f}x "
+            f"{_fmt_m(enc_ref):>16} {_fmt_m(tot_ref):>14}  "
             f"{row['note']}"
         )
     print()
-    if len(rows) == 1:
-        row = rows[0]
-        cfg = row["student_config"]
-        print("Student config:")
-        for key in sorted(cfg):
-            print(f"  {key}: {cfg[key]}")
 
 
 def maybe_load_hydra_preset(config_dir: pathlib.Path, size: str) -> dict | None:
@@ -313,7 +307,9 @@ def maybe_load_hydra_preset(config_dir: pathlib.Path, size: str) -> dict | None:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Compare student tokenizer preset sizes against the KL-VAE."
+        description=(
+            "Compare student tokenizer presets to frozen KL-VAE encoder (+ quant_conv)."
+        )
     )
     parser.add_argument(
         "--size",
@@ -325,7 +321,7 @@ def parse_args() -> argparse.Namespace:
         "--config-dir",
         type=str,
         default=str(ROOT / "unified_video_action" / "config"),
-        help="Hydra config directory (optional cross-check of YAML presets).",
+        help="Hydra config directory (optional YAML cross-check).",
     )
     parser.add_argument(
         "--no-torch",
@@ -346,8 +342,6 @@ def main() -> None:
     config_dir = pathlib.Path(args.config_dir).resolve()
     if config_dir.is_dir() and len(sizes) == 1:
         try:
-            from omegaconf import OmegaConf
-
             hydra_params = maybe_load_hydra_preset(config_dir, sizes[0])
         except Exception as exc:
             hydra_params = None
@@ -356,11 +350,17 @@ def main() -> None:
             if hydra_params is not None:
                 built = build_student_params(sizes[0])
                 if hydra_params != built:
-                    print("Warning: Hydra YAML preset differs from built-in table:")
+                    print("Warning: Hydra YAML preset differs from script table:")
                     print(f"  hydra:  {hydra_params}")
                     print(f"  script: {built}")
                 else:
-                    print("Hydra preset matches built-in table.")
+                    print("Hydra preset matches script table.")
+
+    if len(rows) == 1:
+        cfg = rows[0]["student_config"]
+        print("Student config:")
+        for key in sorted(cfg):
+            print(f"  {key}: {cfg[key]}")
 
 
 if __name__ == "__main__":

@@ -5,7 +5,8 @@
 #   SIZE=equal ./scripts/training/train_uva_libero10_student.sh
 #   SIZE=large ./scripts/training/train_uva_libero10_student.sh
 
-SIZE="${SIZE:-small}"
+# Default aligns with historic manual CLI sizing (~Enc+quant); use SIZE=small for compact.
+SIZE="${SIZE:-equal}"
 
 accelerate launch --num_processes=3 train.py \
   --config-dir=unified_video_action/config \
