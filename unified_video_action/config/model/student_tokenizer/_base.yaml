@@ -1,0 +1,13 @@
+# @package _global_.model.policy
+# Shared student-tokenizer training settings (REPA-style alignment).
+use_student_tokenizer: true
+
+align_params:
+  enable: true
+  coeff: 0.05
+  loss_type: hybrid
+  teacher_mode: sample
+  use_projector: true
+  projector_dim: 512
+  mse_coeff: 0.25
+  stats_coeff: 0.1

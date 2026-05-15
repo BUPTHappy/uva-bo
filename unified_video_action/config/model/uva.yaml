@@ -1,5 +1,8 @@
 _target_: unified_video_action.workspace.train_unified_video_action_workspace.TrainUnifiedVideoActionWorkspace
 
+defaults:
+  - optional student_tokenizer: null
+
 policy:
   _target_: unified_video_action.policy.unified_video_action_policy.UnifiedVideoActionPolicy
   selected_training_mode: null

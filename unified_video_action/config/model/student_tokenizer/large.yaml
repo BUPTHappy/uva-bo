@@ -1,0 +1,17 @@
+# @package _global_.model.policy
+# ~122M params (~1.76x KL-VAE total). For studying scaling beyond teacher VAE capacity.
+defaults:
+  - _base
+
+student_tokenizer_params:
+  img_size: 256
+  patch_size: 16
+  in_channels: 3
+  latent_channels: 16
+  hidden_dim: 640
+  depth: 14
+  num_heads: 8
+  mlp_ratio: 4.0
+  dropout: 0.0
+  use_temporal_mixer: true
+  temporal_kernel_size: 3

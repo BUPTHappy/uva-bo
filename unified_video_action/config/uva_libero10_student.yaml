@@ -1,0 +1,37 @@
+# Libero10 policy training with a selectable student tokenizer size preset.
+# Switch size: model/student_tokenizer=equal  (or small | large)
+name: uva_libero10_student
+
+defaults:
+  - uva_libero10
+  - override /model/student_tokenizer: small
+
+model:
+  policy:
+    autoregressive_model_params:
+      pretrained_model_path: checkpoints/libero10_video.ckpt
+    action_model_params:
+      predict_action: true
+    selected_training_mode: policy_model
+    optimizer:
+      learning_rate: 1.0e-4
+
+dataloader:
+  batch_size: 16
+  num_workers: 8
+
+val_dataloader:
+  batch_size: 16
+  num_workers: 8
+
+training:
+  gradient_accumulate_every: 4
+  resume: false
+
+task:
+  env_runner:
+    n_envs: 1
+
+logging:
+  project: uva-repa-new
+  name: train_uva_libero10_student
