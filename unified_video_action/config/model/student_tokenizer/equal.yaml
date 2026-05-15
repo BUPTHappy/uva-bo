@@ -1,5 +1,6 @@
 # @package _global_.model.policy
-# ~70M params (~1.00x KL-VAE total). Wider/deeper ViT-style student encoder.
+# Sized to roughly match frozen KL-VAE `AutoencoderKL` total trainable params
+# (~66–67M depending on Torch build; Torch count is authoritative).
 defaults:
   - _base
 
@@ -8,8 +9,8 @@ student_tokenizer_params:
   patch_size: 16
   in_channels: 3
   latent_channels: 16
-  hidden_dim: 448
-  depth: 18
+  hidden_dim: 416
+  depth: 21
   num_heads: 8
   mlp_ratio: 4.0
   dropout: 0.0

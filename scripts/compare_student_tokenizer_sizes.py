@@ -1,6 +1,11 @@
 #!/usr/bin/env python3
-"""
-Compare parameter counts for student tokenizer presets vs the frozen KL-VAE.
+"""Compare parameter counts for student tokenizer presets vs the frozen KL-VAE.
+
+**Ground truth.** When PyTorch is available, the script counts real `torch.nn.Module`
+parameters (`nn.TransformerEncoderLayer` rounding etc.). Offline analytical counts
+approximate sizes; analytical VAE totals use the same Encoder/Decoder layout as
+`unified_video_action/vae/vaekl.py`, including Decoder's default **no spatial
+self-attention in upsampling** (`attn_resolutions=()`, unlike the Encoder tail).
 
 Usage:
   python scripts/compare_student_tokenizer_sizes.py
@@ -23,19 +28,19 @@ PRESETS = {
         "hidden_dim": 384,
         "depth": 6,
         "num_heads": 8,
-        "note": "manual CLI baseline (~0.43x VAE)",
+        "note": "manual CLI baseline (~0.45× full frozen VAE)",
     },
     "equal": {
-        "hidden_dim": 448,
-        "depth": 18,
+        "hidden_dim": 416,
+        "depth": 21,
         "num_heads": 8,
-        "note": "matched to KL-VAE total params (~1.00x VAE)",
+        "note": "student params ~matched to full frozen VAE (~1.00×)",
     },
     "large": {
         "hidden_dim": 640,
         "depth": 14,
         "num_heads": 8,
-        "note": "scaled-up student (~1.76x VAE)",
+        "note": "scaled-up student (~1.84× full frozen VAE)",
     },
 }
 
@@ -114,25 +119,33 @@ def count_attn(c: int) -> int:
 
 
 def count_vae_analytical() -> dict[str, int]:
+    """Match `AutoencoderKL` + `Encoder` / `Decoder` defaults in vaekl.py.
+
+    Encoder uses attn at spatial scale 16; Decoder default `attn_resolutions=()`
+    keeps attention only in the mid block — not in upsampling stages.
+    """
     ch = 128
     ch_mult = (1, 1, 2, 2, 4)
     z = 16
     res = 256
     num_res_blocks = 2
-    attn_res = (16,)
+    attn_res_encoder = (16,)
+    attn_res_decoder: tuple[int, ...] = ()
+
+    in_ch_mult = (1,) + tuple(ch_mult)
 
     def encoder() -> int:
         n = count_conv2d(3, ch, 3)
         curr = res
-        block_in = ch
-        for i, mult in enumerate(ch_mult):
+        for i_level, mult in enumerate(ch_mult):
+            block_in = ch * in_ch_mult[i_level]
             block_out = ch * mult
             for _ in range(num_res_blocks):
                 n += count_resnet(block_in, block_out)
                 block_in = block_out
-                if curr in attn_res:
+                if curr in attn_res_encoder:
                     n += count_attn(block_in)
-            if i != len(ch_mult) - 1:
+            if i_level != len(ch_mult) - 1:
                 n += count_conv2d(block_in, block_in, 3)
                 curr //= 2
         n += count_resnet(block_in, block_in)
@@ -149,14 +162,14 @@ def count_vae_analytical() -> dict[str, int]:
         n += count_attn(block_in)
         n += count_resnet(block_in, block_in)
         curr = res // 2 ** (len(ch_mult) - 1)
-        for i, mult in reversed(list(enumerate(ch_mult))):
+        for i_level, mult in reversed(list(enumerate(ch_mult))):
             block_out = ch * mult
             for _ in range(num_res_blocks + 1):
                 n += count_resnet(block_in, block_out)
                 block_in = block_out
-                if curr in attn_res:
+                if curr in attn_res_decoder:
                     n += count_attn(block_in)
-            if i != 0:
+            if i_level != 0:
                 n += count_conv2d(block_in, block_in, 3)
                 curr *= 2
         n += count_groupnorm(block_in)
@@ -176,6 +189,9 @@ def count_vae_analytical() -> dict[str, int]:
 
 def count_with_torch(student_params: dict) -> dict[str, int] | None:
     try:
+        import contextlib
+        import io
+
         import torch
         from omegaconf import OmegaConf
 
@@ -190,7 +206,9 @@ def count_with_torch(student_params: dict) -> dict[str, int] | None:
         return sum(p.numel() for p in module.parameters())
 
     student = StudentLatentTokenizer(**student_params)
-    vae = AutoencoderKL(autoencoder_path=None, ddconfig=OmegaConf.create(VAE_DDCONFIG))
+    # `Decoder.__init__` prints z-shape; keep this script quiet for batch runs.
+    with contextlib.redirect_stdout(io.StringIO()):
+        vae = AutoencoderKL(autoencoder_path=None, ddconfig=OmegaConf.create(VAE_DDCONFIG))
     hidden_dim = int(student_params["hidden_dim"])
     latent_channels = int(student_params["latent_channels"])
     projector = torch.nn.Sequential(
