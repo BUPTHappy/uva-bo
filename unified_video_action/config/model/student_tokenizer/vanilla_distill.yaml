@@ -1,0 +1,17 @@
+# @package _global_.model.policy
+# Phase-1: vanilla latent MSE distillation from frozen KL-VAE (no REPA alignment).
+defaults:
+  - small
+
+use_student_tokenizer: true
+
+align_params:
+  enable: false
+
+distill_params:
+  distill_only: true
+  freeze_student: false
+  loss_type: mse
+  teacher_mode: sample
+
+student_tokenizer_pretrained_path: null

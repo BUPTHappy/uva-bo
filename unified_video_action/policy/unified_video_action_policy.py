@@ -64,9 +64,27 @@ class UnifiedVideoActionPolicy(BaseImagePolicy):
         self.use_student_tokenizer = bool(kwargs.get("use_student_tokenizer", False))
         self.student_tokenizer_params = kwargs.get("student_tokenizer_params", None)
         self.align_params = kwargs.get("align_params", {})
+        self.distill_params = kwargs.get("distill_params", {})
+        self.student_tokenizer_pretrained_path = kwargs.get(
+            "student_tokenizer_pretrained_path", None
+        )
+
+        self.student_distill_only = bool(self.distill_params.get("distill_only", False))
+        self.freeze_student_tokenizer = bool(
+            self.distill_params.get("freeze_student", False)
+        )
+        self.distill_loss_type = str(
+            self.distill_params.get("loss_type", "mse")
+        ).lower()
+        self.distill_teacher_mode = str(
+            self.distill_params.get("teacher_mode", "sample")
+        ).lower()
 
         # Alignment defaults are intentionally conservative for stable joint training.
         self.use_alignment = bool(self.align_params.get("enable", False))
+        if self.student_distill_only:
+            self.use_alignment = False
+            self.align_teacher_mode = self.distill_teacher_mode
         self.align_coeff = float(self.align_params.get("coeff", 0.0))
         self.align_loss_type = str(self.align_params.get("loss_type", "cosine")).lower()
         self.align_teacher_mode = str(
@@ -77,6 +95,7 @@ class UnifiedVideoActionPolicy(BaseImagePolicy):
         self.align_mse_coeff = float(self.align_params.get("mse_coeff", 0.25))
         self.align_stats_coeff = float(self.align_params.get("stats_coeff", 0.1))
         self._last_align_metrics = {}
+        self._last_distill_metrics = {}
 
         ## =========================== load vae model ===========================
         with torch.no_grad():
@@ -94,6 +113,12 @@ class UnifiedVideoActionPolicy(BaseImagePolicy):
                     "use_student_tokenizer=True but student_tokenizer_params is not provided."
                 )
             self.student_tokenizer = StudentLatentTokenizer(**self.student_tokenizer_params)
+            if self.freeze_student_tokenizer:
+                self.student_tokenizer.eval()
+                for param in self.student_tokenizer.parameters():
+                    param.requires_grad = False
+            if self.student_tokenizer_pretrained_path is not None:
+                self.load_student_tokenizer_checkpoint(self.student_tokenizer_pretrained_path)
             if self.use_alignment and self.align_use_projector:
                 hidden_dim = int(self.student_tokenizer_params.get("hidden_dim", 384))
                 latent_dim = int(
@@ -174,8 +199,61 @@ class UnifiedVideoActionPolicy(BaseImagePolicy):
                 self.task_modes = ["policy_model", "full_dynamic_model"]
             else:
                 self.task_modes = [self.selected_training_mode]
+        if self.student_distill_only:
+            for param in self.model.parameters():
+                param.requires_grad = False
+
         print("----------------------------------------------------------------------")
         print("task_modes", self.task_modes)
+        print("student_distill_only", self.student_distill_only)
+        print("freeze_student_tokenizer", self.freeze_student_tokenizer)
+        print("----------------------------------------------------------------------")
+
+    def load_student_tokenizer_checkpoint(self, path: str):
+        if not os.path.exists(path):
+            raise FileNotFoundError(
+                f"student_tokenizer_pretrained_path not found: {path}"
+            )
+        if self.student_tokenizer is None:
+            raise ValueError(
+                "student_tokenizer_pretrained_path is set but student_tokenizer is None."
+            )
+
+        print("----------------------------------------------------------------------")
+        print("Loading student tokenizer checkpoint:", path)
+        print("----------------------------------------------------------------------")
+
+        ckpt = torch.load(path, map_location="cpu", weights_only=False)
+        if "state_dicts" not in ckpt:
+            raise ValueError(f"Unsupported checkpoint format (no state_dicts): {path}")
+
+        state_dicts = ckpt["state_dicts"]
+        if "ema_model" in state_dicts:
+            source_state = state_dicts["ema_model"]
+            print("load student tokenizer from ema_model")
+        elif "model" in state_dicts:
+            source_state = state_dicts["model"]
+            print("load student tokenizer from model")
+        else:
+            raise ValueError(
+                f"Checkpoint has no ema_model/model state_dict: {path}"
+            )
+
+        student_state = {}
+        for key, value in source_state.items():
+            if key.startswith("student_tokenizer."):
+                student_state[key[len("student_tokenizer.") :]] = value
+
+        if len(student_state) == 0:
+            raise ValueError(
+                f"No student_tokenizer.* keys found in checkpoint: {path}"
+            )
+
+        missing_keys, unexpected_keys = self.student_tokenizer.load_state_dict(
+            student_state, strict=True
+        )
+        print("student_tokenizer missing keys:", missing_keys)
+        print("student_tokenizer unexpected keys:", unexpected_keys)
         print("----------------------------------------------------------------------")
 
     def load_pretrained_model(self):
@@ -396,7 +474,10 @@ class UnifiedVideoActionPolicy(BaseImagePolicy):
         betas: Tuple[float, float],
     ) -> torch.optim.Optimizer:
 
-        optim_groups = self.add_weight_decay(self.model, weight_decay=weight_decay)
+        if not self.student_distill_only:
+            optim_groups = self.add_weight_decay(self.model, weight_decay=weight_decay)
+        else:
+            optim_groups = []
         if self.use_student_tokenizer and self.student_tokenizer is not None:
             optim_groups.extend(
                 self.add_weight_decay(self.student_tokenizer, weight_decay=weight_decay)
@@ -443,8 +524,28 @@ class UnifiedVideoActionPolicy(BaseImagePolicy):
         return z.permute(0, 1, 3, 4, 2).reshape(bsz, timesteps, height * width, channels)
 
     def _encode_student_latent(self, x: torch.Tensor):
+        if self.freeze_student_tokenizer:
+            with torch.no_grad():
+                latent, token_feat = self.student_tokenizer(x)
+            return latent, token_feat
         latent, token_feat = self.student_tokenizer(x)
         return latent, token_feat
+
+    def _compute_vanilla_distill_loss(
+        self, student_latent: torch.Tensor, teacher_latent: torch.Tensor
+    ):
+        student_latent = student_latent.float()
+        teacher_latent = teacher_latent.float()
+        if self.distill_loss_type == "mse":
+            distill_loss = F.mse_loss(student_latent, teacher_latent)
+        else:
+            raise ValueError(f"Unsupported distill loss_type: {self.distill_loss_type}")
+        metrics = {
+            "distill_mse": distill_loss.detach(),
+            "student_latent_norm": student_latent.detach().norm(dim=-1).mean(),
+            "teacher_latent_norm": teacher_latent.detach().norm(dim=-1).mean(),
+        }
+        return distill_loss, metrics
 
     def _compute_alignment_loss(
         self, student_tokens: torch.Tensor, teacher_tokens: torch.Tensor
@@ -551,6 +652,68 @@ class UnifiedVideoActionPolicy(BaseImagePolicy):
                         proprioception_input["pred_second_image"]
                     )
                     proprioception_input["pred_second_image_z"] = pred_second_image_z
+
+            if self.student_distill_only:
+                teacher_z = self._extract_teacher_latent(x_img)
+                teacher_c = self._extract_teacher_latent(c_img)
+                distill_z, metrics_z = self._compute_vanilla_distill_loss(z, teacher_z)
+                distill_c, metrics_c = self._compute_vanilla_distill_loss(c, teacher_c)
+                distill_terms = [distill_z, distill_c]
+                distill_metrics = [metrics_z, metrics_c]
+
+                if proprioception_input is not None:
+                    if "second_image" in proprioception_input:
+                        second_image = proprioception_input["second_image"]
+                        student_second_z, _ = self._encode_student_latent(second_image)
+                        teacher_second_z = self._extract_teacher_latent(second_image)
+                        distill_second, metrics_second = self._compute_vanilla_distill_loss(
+                            student_second_z, teacher_second_z
+                        )
+                        distill_terms.append(distill_second)
+                        distill_metrics.append(metrics_second)
+                    if "pred_second_image" in proprioception_input:
+                        pred_second_image = proprioception_input["pred_second_image"]
+                        student_pred_second_z, _ = self._encode_student_latent(
+                            pred_second_image
+                        )
+                        teacher_pred_second_z = self._extract_teacher_latent(
+                            pred_second_image
+                        )
+                        distill_pred_second, metrics_pred_second = (
+                            self._compute_vanilla_distill_loss(
+                                student_pred_second_z, teacher_pred_second_z
+                            )
+                        )
+                        distill_terms.append(distill_pred_second)
+                        distill_metrics.append(metrics_pred_second)
+
+                distill_loss = torch.stack(distill_terms).mean()
+                self._last_distill_metrics = {
+                    "distill_loss": distill_loss.detach(),
+                    "distill_mse": torch.stack(
+                        [m["distill_mse"] for m in distill_metrics]
+                    ).mean(),
+                    "student_latent_norm": torch.stack(
+                        [m["student_latent_norm"] for m in distill_metrics]
+                    ).mean(),
+                    "teacher_latent_norm": torch.stack(
+                        [m["teacher_latent_norm"] for m in distill_metrics]
+                    ).mean(),
+                }
+                video_loss = torch.tensor(0.0, device=x.device)
+                act_loss = torch.tensor(0.0, device=x.device)
+                loss = distill_loss
+
+                def _ddp_unused_term(param: torch.Tensor) -> torch.Tensor:
+                    return torch.nan_to_num(
+                        param, nan=0.0, posinf=0.0, neginf=0.0
+                    ).sum().mul(0.0)
+
+                if self.student_tokenizer is not None:
+                    for param in self.student_tokenizer.parameters():
+                        if param.requires_grad:
+                            loss = loss + _ddp_unused_term(param)
+                return loss, (video_loss, act_loss)
 
             if self.use_alignment:
                 teacher_z = self._extract_teacher_latent(x_img)

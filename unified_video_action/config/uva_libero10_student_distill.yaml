@@ -1,0 +1,54 @@
+# Phase 1: distill small student encoder from frozen KL-VAE on Libero10.
+# No MAR/action loss; only vanilla MSE between student latents and VAE latents.
+name: uva_libero10_student_distill
+
+defaults:
+  - uva_libero10
+  - override /model/student_tokenizer: vanilla_distill
+
+model:
+  policy:
+    autoregressive_model_params:
+      pretrained_model_path: null
+      predict_video: false
+    action_model_params:
+      predict_action: false
+    selected_training_mode: null
+    optimizer:
+      learning_rate: 1.0e-4
+      weight_decay: 0.01
+
+dataloader:
+  batch_size: 32
+  num_workers: 8
+
+val_dataloader:
+  batch_size: 32
+  num_workers: 8
+
+training:
+  num_epochs: 200
+  gradient_accumulate_every: 1
+  resume: true
+  rollout_every: 999999
+  use_ema: true
+  val_every: 1
+  checkpoint_every: 10
+
+checkpoint:
+  topk:
+    monitor_key: distill_mse
+    format_str: epoch={epoch:04d}-distill_mse={distill_mse:.5f}.ckpt
+    k: 3
+    mode: min
+
+task:
+  env_runner: null
+
+logging:
+  project: uva-repa-new
+  name: train_uva_libero10_student_distill
+  tags:
+    - train_uva_libero10_student_distill
+    - libero10
+    - vanilla_distill

@@ -1,0 +1,36 @@
+# Phase 2: load phase-1 student encoder (frozen), train MAR + action on Libero10.
+name: uva_libero10_student_frozen
+
+defaults:
+  - uva_libero10_student
+  - override /model/student_tokenizer: frozen_pretrained
+
+model:
+  policy:
+    autoregressive_model_params:
+      pretrained_model_path: checkpoints/libero10_video.ckpt
+    action_model_params:
+      predict_action: true
+    selected_training_mode: policy_model
+    optimizer:
+      learning_rate: 1.0e-4
+
+dataloader:
+  batch_size: 16
+  num_workers: 8
+
+val_dataloader:
+  batch_size: 16
+  num_workers: 8
+
+training:
+  gradient_accumulate_every: 4
+  resume: false
+
+task:
+  env_runner:
+    n_envs: 1
+
+logging:
+  project: uva-repa-new
+  name: train_uva_libero10_student_frozen

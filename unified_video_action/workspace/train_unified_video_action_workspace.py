@@ -307,6 +307,16 @@ class TrainUnifiedVideoActionWorkspace(BaseWorkspace):
                                     step_log[key] = value.detach().float().item()
                                 elif isinstance(value, (float, int)):
                                     step_log[key] = float(value)
+                    if hasattr(policy_module, "_last_distill_metrics"):
+                        distill_metrics = getattr(
+                            policy_module, "_last_distill_metrics", {}
+                        )
+                        if isinstance(distill_metrics, dict) and len(distill_metrics) > 0:
+                            for key, value in distill_metrics.items():
+                                if torch.is_tensor(value):
+                                    step_log[key] = value.detach().float().item()
+                                elif isinstance(value, (float, int)):
+                                    step_log[key] = float(value)
 
                     is_last_batch = batch_idx == (len(train_dataloader) - 1)
                     if not is_last_batch:
