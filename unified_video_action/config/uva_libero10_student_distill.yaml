@@ -27,19 +27,20 @@ val_dataloader:
   num_workers: 8
 
 training:
-  num_epochs: 200
+  num_epochs: 1000
   gradient_accumulate_every: 1
   resume: true
   rollout_every: 999999
   use_ema: true
   val_every: 1
-  checkpoint_every: 10
+  checkpoint_every: 20
 
 checkpoint:
+  save_last_ckpt: true
   topk:
     monitor_key: distill_mse
     format_str: epoch={epoch:04d}-distill_mse={distill_mse:.5f}.ckpt
-    k: 3
+    k: 5
     mode: min
 
 task:
