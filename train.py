@@ -32,7 +32,15 @@ if "WANDB_API_KEY" in os.environ:
 def main(cfg: OmegaConf):
     OmegaConf.resolve(cfg)
 
-    if cfg.model.policy.action_model_params.predict_action == False:
+    distill_only = bool(
+        cfg.model.policy.get("distill_params", {}).get("distill_only", False)
+    )
+    predict_action = bool(cfg.model.policy.action_model_params.predict_action)
+    predict_video = bool(cfg.model.policy.autoregressive_model_params.predict_video)
+
+    # Distill phase: keep checkpoint.topk from config (distill_mse).
+    # Video-only training: monitor video_fvd. Policy training uses task config (e.g. test_mean_score).
+    if not predict_action and not distill_only and predict_video:
         cfg.checkpoint.topk.monitor_key = "video_fvd"
         cfg.checkpoint.topk.format_str = (
             "epoch={epoch:04d}-video_fvd={video_fvd:.3f}.ckpt"
