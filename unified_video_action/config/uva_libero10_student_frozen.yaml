@@ -26,6 +26,7 @@ val_dataloader:
 training:
   gradient_accumulate_every: 4
   resume: false
+  rollout_every: 10
 
 task:
   env_runner:
