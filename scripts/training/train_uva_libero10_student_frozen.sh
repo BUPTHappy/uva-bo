@@ -1,13 +1,18 @@
 #!/bin/sh
 # Phase 2: frozen distilled student + train MAR/action on Libero10.
 # Usage:
-#   STUDENT_CKPT=checkpoints/uva_libero10_student_distill_small/checkpoints/latest.ckpt \
-#     ./scripts/training/train_uva_libero10_student_frozen.sh
+#   ./scripts/training/train_uva_libero10_student_frozen.sh
+#   NUM_PROCESSES=3 ./scripts/training/train_uva_libero10_student_frozen.sh
+#   STUDENT_CKPT=checkpoints/other.ckpt ./scripts/training/train_uva_libero10_student_frozen.sh
 
-if [ -z "${STUDENT_CKPT}" ]; then
-  echo "Set STUDENT_CKPT to the phase-1 checkpoint (e.g. checkpoints/.../latest.ckpt)."
+STUDENT_CKPT="${STUDENT_CKPT:-checkpoints/libero10_distill.ckpt}"
+
+if [ ! -f "${STUDENT_CKPT}" ]; then
+  echo "Student checkpoint not found: ${STUDENT_CKPT}"
   exit 1
 fi
+
+echo "Using frozen student checkpoint: ${STUDENT_CKPT}"
 
 _detect_num_gpus() {
   if [ -n "${CUDA_VISIBLE_DEVICES}" ]; then
@@ -34,4 +39,4 @@ accelerate launch --num_processes="${NUM_PROCESSES}" train.py \
   --config-dir=unified_video_action/config \
   --config-name=uva_libero10_student_frozen.yaml \
   "model.policy.student_tokenizer_pretrained_path=${STUDENT_CKPT}" \
-  hydra.run.dir="checkpoints/uva_libero10_student_frozen_small"
+  hydra.run.dir="checkpoints/uva_libero10_student_frozen_phase2"
