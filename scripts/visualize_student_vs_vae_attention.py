@@ -110,7 +110,12 @@ def load_policy_from_checkpoint(ckpt_path: str, device: torch.device):
     patch_missing_obs_horizon(cfg)
     cls = hydra.utils.get_class(cfg.model._target_)
     workspace: BaseWorkspace = cls(cfg, output_dir=".")
-    workspace.load_payload(payload, exclude_keys=None, include_keys=None, strict=False)
+    workspace.load_payload(
+        payload,
+        exclude_keys=("optimizer", "lr_scheduler"),
+        include_keys=None,
+        strict=False,
+    )
 
     use_ema = False
     if hasattr(workspace, "ema_model") and workspace.ema_model is not None:
@@ -392,7 +397,12 @@ def main():
         patch_missing_obs_horizon(payload["cfg"])
         cls = hydra.utils.get_class(payload["cfg"].model._target_)
         workspace: BaseWorkspace = cls(payload["cfg"], output_dir=".")
-        workspace.load_payload(payload, exclude_keys=None, include_keys=None, strict=False)
+        workspace.load_payload(
+            payload,
+            exclude_keys=("optimizer", "lr_scheduler"),
+            include_keys=None,
+            strict=False,
+        )
         policy = workspace.model.eval().to(device)
         for p in policy.parameters():
             p.requires_grad_(False)
