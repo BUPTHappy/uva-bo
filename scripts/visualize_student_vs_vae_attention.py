@@ -133,20 +133,29 @@ def load_policy_from_checkpoint(ckpt_path: str, device: torch.device):
 
 def patch_missing_obs_horizon(cfg) -> None:
     """Old checkpoints may not store per-RGB obs horizon expected by this branch."""
-    default_horizon = None
+    default_obs_horizon = None
     if "task" in cfg and "dataset" in cfg.task and "n_obs_steps" in cfg.task.dataset:
-        default_horizon = int(cfg.task.dataset.n_obs_steps)
-    if default_horizon is None:
-        default_horizon = 16
+        default_obs_horizon = int(cfg.task.dataset.n_obs_steps)
+    if default_obs_horizon is None:
+        default_obs_horizon = 16
+
+    default_action_horizon = None
+    if "task" in cfg and "dataset" in cfg.task and "horizon" in cfg.task.dataset:
+        default_action_horizon = int(cfg.task.dataset.horizon)
+    if default_action_horizon is None:
+        default_action_horizon = 32
 
     from omegaconf import open_dict
 
     def _patch_shape_meta(shape_meta) -> None:
-        if shape_meta is None or "obs" not in shape_meta:
+        if shape_meta is None:
             return
-        for _, attr in shape_meta.obs.items():
-            if attr.get("type", "low_dim") == "rgb" and "horizon" not in attr:
-                attr.horizon = default_horizon
+        if "obs" in shape_meta:
+            for _, attr in shape_meta.obs.items():
+                if attr.get("type", "low_dim") == "rgb" and "horizon" not in attr:
+                    attr.horizon = default_obs_horizon
+        if "action" in shape_meta and "horizon" not in shape_meta.action:
+            shape_meta.action.horizon = default_action_horizon
 
     with open_dict(cfg):
         if "task" in cfg and "shape_meta" in cfg.task:
