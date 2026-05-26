@@ -106,6 +106,12 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Add a |student - VAE| row to each visualization grid.",
     )
+    parser.add_argument(
+        "--student-display-gamma",
+        type=float,
+        default=2.0,
+        help="Gamma applied only to displayed student heatmaps after inversion; >1 suppresses weak red regions.",
+    )
     return parser.parse_args()
 
 
@@ -287,6 +293,13 @@ def minmax_per_frame(heat_bthw: torch.Tensor, eps: float = 1e-6) -> torch.Tensor
     return ((heat - lo) / (hi - lo + eps)).clamp(0.0, 1.0)
 
 
+def enhance_student_display(heat_thw: torch.Tensor, gamma: float) -> torch.Tensor:
+    heat = heat_thw.clamp(0.0, 1.0)
+    if gamma <= 0:
+        return heat
+    return heat.pow(gamma).clamp(0.0, 1.0)
+
+
 def red_colormap(heat_hw: np.ndarray) -> np.ndarray:
     heat = np.clip(heat_hw, 0.0, 1.0)[..., None]
     low = np.array([255, 255, 255], dtype=np.float32)
@@ -324,6 +337,7 @@ def make_grid(
     title: str,
     frame_ids: List[int],
     include_diff_row: bool = False,
+    student_display_gamma: float = 2.0,
 ) -> Image.Image:
     images = images_btchw[0].cpu()
     vae_heat = minmax_per_frame(vae_heat_bthw)[0]
@@ -346,7 +360,11 @@ def make_grid(
             elif row_idx == 1:
                 tile = overlay_heat(images[t], vae_heat[t], alpha)
             elif row_idx == 2:
-                tile = overlay_heat(images[t], 1.0 - student_heat[t], alpha)
+                student_display_heat = enhance_student_display(
+                    1.0 - student_heat[t],
+                    gamma=student_display_gamma,
+                )
+                tile = overlay_heat(images[t], student_display_heat, alpha)
             else:
                 tile = overlay_heat(images[t], diff_heat[t], alpha)
             if t == 0:
@@ -469,6 +487,7 @@ def main():
             title=f"latent_norm | {short_title}",
             frame_ids=frame_ids,
             include_diff_row=args.include_diff_row,
+            student_display_gamma=args.student_display_gamma,
         )
         latent_path = output_dir / f"{stem}_latent_norm.png"
         latent_grid.save(latent_path)
@@ -485,6 +504,7 @@ def main():
                 title=f"input_grad | {short_title}",
                 frame_ids=frame_ids,
                 include_diff_row=args.include_diff_row,
+                student_display_gamma=args.student_display_gamma,
             )
             grad_path = output_dir / f"{stem}_input_grad.png"
             grad_grid.save(grad_path)
