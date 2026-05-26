@@ -141,10 +141,22 @@ def patch_missing_obs_horizon(cfg) -> None:
 
     from omegaconf import open_dict
 
-    with open_dict(cfg):
-        for _, attr in cfg.task.shape_meta.obs.items():
+    def _patch_shape_meta(shape_meta) -> None:
+        if shape_meta is None or "obs" not in shape_meta:
+            return
+        for _, attr in shape_meta.obs.items():
             if attr.get("type", "low_dim") == "rgb" and "horizon" not in attr:
                 attr.horizon = default_horizon
+
+    with open_dict(cfg):
+        if "task" in cfg and "shape_meta" in cfg.task:
+            _patch_shape_meta(cfg.task.shape_meta)
+        if (
+            "model" in cfg
+            and "policy" in cfg.model
+            and "shape_meta" in cfg.model.policy
+        ):
+            _patch_shape_meta(cfg.model.policy.shape_meta)
 
 
 def list_demos(dataset_path: str) -> List[Tuple[str, str]]:
