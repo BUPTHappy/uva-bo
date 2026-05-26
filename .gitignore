@@ -16,7 +16,7 @@ pretrained_models
 bin
 logs
 wandb
-outputs
+
 data
 data_local
 .vscode
