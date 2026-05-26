@@ -9,7 +9,7 @@ vis*/
 
 *.jpg
 debug/
-outputs/
+
 data/
 pretrained_models
 
