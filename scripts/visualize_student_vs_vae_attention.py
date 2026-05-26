@@ -96,6 +96,16 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Also save raw heatmaps as .npz for later analysis.",
     )
+    parser.add_argument(
+        "--include-input-grad",
+        action="store_true",
+        help="Also generate input-gradient saliency grids.",
+    )
+    parser.add_argument(
+        "--include-diff-row",
+        action="store_true",
+        help="Add a |student - VAE| row to each visualization grid.",
+    )
     return parser.parse_args()
 
 
@@ -313,15 +323,20 @@ def make_grid(
     alpha: float,
     title: str,
     frame_ids: List[int],
+    include_diff_row: bool = False,
 ) -> Image.Image:
     images = images_btchw[0].cpu()
     vae_heat = minmax_per_frame(vae_heat_bthw)[0]
     student_heat = minmax_per_frame(student_heat_bthw)[0]
-    diff_heat = (student_heat - vae_heat).abs()
-    diff_heat = minmax_per_frame(diff_heat.unsqueeze(0))[0]
+    diff_heat = None
+    if include_diff_row:
+        diff_heat = (student_heat - vae_heat).abs()
+        diff_heat = minmax_per_frame(diff_heat.unsqueeze(0))[0]
 
     rows: List[List[Image.Image]] = []
-    labels = ["original", "VAE encoder", "student encoder", "|student - VAE|"]
+    labels = ["original", "VAE encoder", "student encoder"]
+    if include_diff_row:
+        labels.append("|student - VAE|")
     for row_idx, label in enumerate(labels):
         row_tiles: List[Image.Image] = []
         for t in range(images.shape[0]):
@@ -331,7 +346,7 @@ def make_grid(
             elif row_idx == 1:
                 tile = overlay_heat(images[t], vae_heat[t], alpha)
             elif row_idx == 2:
-                tile = overlay_heat(images[t], student_heat[t], alpha)
+                tile = overlay_heat(images[t], 1.0 - student_heat[t], alpha)
             else:
                 tile = overlay_heat(images[t], diff_heat[t], alpha)
             if t == 0:
@@ -441,9 +456,6 @@ def main():
             vae_latent_heat = heatmap_from_latent(vae_latent, args.image_size)
             student_latent_heat = heatmap_from_latent(student_latent, args.image_size)
 
-        vae_grad_heat = heatmap_from_input_grad(policy, x, "vae", args.vae_reduction)
-        student_grad_heat = heatmap_from_input_grad(policy, x, "student", args.vae_reduction)
-
         stem = safe_filename(
             f"sample_{out_idx:03d}_demo_{demo_idx:05d}_{pathlib.Path(hdf5_path).stem}_{demo_key}"
         )
@@ -456,20 +468,26 @@ def main():
             alpha=args.alpha,
             title=f"latent_norm | {short_title}",
             frame_ids=frame_ids,
+            include_diff_row=args.include_diff_row,
         )
         latent_path = output_dir / f"{stem}_latent_norm.png"
         latent_grid.save(latent_path)
 
-        grad_grid = make_grid(
-            images_btchw=images_btchw,
-            vae_heat_bthw=vae_grad_heat.cpu(),
-            student_heat_bthw=student_grad_heat.cpu(),
-            alpha=args.alpha,
-            title=f"input_grad | {short_title}",
-            frame_ids=frame_ids,
-        )
-        grad_path = output_dir / f"{stem}_input_grad.png"
-        grad_grid.save(grad_path)
+        grad_path = None
+        if args.include_input_grad:
+            vae_grad_heat = heatmap_from_input_grad(policy, x, "vae", args.vae_reduction)
+            student_grad_heat = heatmap_from_input_grad(policy, x, "student", args.vae_reduction)
+            grad_grid = make_grid(
+                images_btchw=images_btchw,
+                vae_heat_bthw=vae_grad_heat.cpu(),
+                student_heat_bthw=student_grad_heat.cpu(),
+                alpha=args.alpha,
+                title=f"input_grad | {short_title}",
+                frame_ids=frame_ids,
+                include_diff_row=args.include_diff_row,
+            )
+            grad_path = output_dir / f"{stem}_input_grad.png"
+            grad_grid.save(grad_path)
 
         if args.save_npy:
             np.savez_compressed(
@@ -477,11 +495,12 @@ def main():
                 frame_ids=np.asarray(frame_ids),
                 vae_latent=minmax_per_frame(vae_latent_heat).numpy(),
                 student_latent=minmax_per_frame(student_latent_heat).numpy(),
-                vae_grad=minmax_per_frame(vae_grad_heat).numpy(),
-                student_grad=minmax_per_frame(student_grad_heat).numpy(),
             )
 
-        print(f"[{out_idx + 1}/{len(selected)}] saved {latent_path.name}, {grad_path.name}")
+        saved = [latent_path.name]
+        if grad_path is not None:
+            saved.append(grad_path.name)
+        print(f"[{out_idx + 1}/{len(selected)}] saved {', '.join(saved)}")
 
 
 if __name__ == "__main__":
