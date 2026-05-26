@@ -22,7 +22,12 @@ import os
 import pathlib
 import random
 import re
+import sys
 from typing import List, Tuple
+
+ROOT_DIR = str(pathlib.Path(__file__).resolve().parent.parent)
+if ROOT_DIR not in sys.path:
+    sys.path.insert(0, ROOT_DIR)
 
 import dill
 import numpy as np
@@ -98,9 +103,11 @@ def load_policy_from_checkpoint(ckpt_path: str, device: torch.device):
     import hydra
 
     from unified_video_action.workspace.base_workspace import BaseWorkspace
+    from omegaconf import open_dict
 
     payload = torch_load_checkpoint(ckpt_path)
     cfg = payload["cfg"]
+    patch_missing_obs_horizon(cfg)
     cls = hydra.utils.get_class(cfg.model._target_)
     workspace: BaseWorkspace = cls(cfg, output_dir=".")
     workspace.load_payload(payload, exclude_keys=None, include_keys=None)
@@ -122,6 +129,22 @@ def load_policy_from_checkpoint(ckpt_path: str, device: torch.device):
     if getattr(policy, "student_tokenizer", None) is None:
         raise RuntimeError("Checkpoint policy does not contain policy.student_tokenizer.")
     return cfg, policy, use_ema
+
+
+def patch_missing_obs_horizon(cfg) -> None:
+    """Old checkpoints may not store per-RGB obs horizon expected by this branch."""
+    default_horizon = None
+    if "task" in cfg and "dataset" in cfg.task and "n_obs_steps" in cfg.task.dataset:
+        default_horizon = int(cfg.task.dataset.n_obs_steps)
+    if default_horizon is None:
+        default_horizon = 16
+
+    from omegaconf import open_dict
+
+    with open_dict(cfg):
+        for _, attr in cfg.task.shape_meta.obs.items():
+            if attr.get("type", "low_dim") == "rgb" and "horizon" not in attr:
+                attr.horizon = default_horizon
 
 
 def list_demos(dataset_path: str) -> List[Tuple[str, str]]:
@@ -341,9 +364,11 @@ def main():
         import hydra
 
         from unified_video_action.workspace.base_workspace import BaseWorkspace
+        from omegaconf import open_dict
 
         # Reloading without EMA is only needed when explicitly requested.
         payload = torch_load_checkpoint(args.checkpoint)
+        patch_missing_obs_horizon(payload["cfg"])
         cls = hydra.utils.get_class(payload["cfg"].model._target_)
         workspace: BaseWorkspace = cls(payload["cfg"], output_dir=".")
         workspace.load_payload(payload, exclude_keys=None, include_keys=None)
