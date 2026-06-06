@@ -26,22 +26,42 @@ def _load_dinov2_torch_hub(model_name: str, pretrained: bool = True):
     return torch.hub.load("facebookresearch/dinov2", model_name, pretrained=pretrained)
 
 
-def _load_dinov2_timm(model_name: str, pretrained: bool = True):
+def _resolve_timm_model_name(model_name: str) -> str:
+    if model_name in DINOV2_HUB_TO_TIMM:
+        return DINOV2_HUB_TO_TIMM[model_name]
+    if model_name in DINOV2_HUB_TO_TIMM.values():
+        return model_name
+    raise ValueError(
+        f"Unsupported DINOv2 model_name={model_name!r}. "
+        f"Expected one of {list(DINOV2_HUB_TO_TIMM.keys())} "
+        f"or timm names {list(DINOV2_HUB_TO_TIMM.values())}."
+    )
+
+
+def _load_dinov2_timm(
+    model_name: str, pretrained: bool = True, img_size: int = 224
+):
     import timm
 
-    if model_name in DINOV2_HUB_TO_TIMM:
-        timm_name = DINOV2_HUB_TO_TIMM[model_name]
-    elif model_name in DINOV2_HUB_TO_TIMM.values():
-        timm_name = model_name
-    else:
-        raise ValueError(
-            f"Unsupported DINOv2 model_name={model_name!r}. "
-            f"Expected one of {list(DINOV2_HUB_TO_TIMM.keys())} "
-            f"or timm names {list(DINOV2_HUB_TO_TIMM.values())}."
-        )
+    timm_name = _resolve_timm_model_name(model_name)
+    create_kwargs = {
+        "pretrained": pretrained,
+        "num_classes": 0,
+        "img_size": int(img_size),
+    }
 
-    model = timm.create_model(timm_name, pretrained=pretrained, num_classes=0)
-    print(f"Loaded DINOv2 teacher via timm: {timm_name}")
+    # timm 0.9.x DINOv2 defaults to 518; dynamic_img_size allows 224 inference.
+    try:
+        model = timm.create_model(
+            timm_name, dynamic_img_size=True, **create_kwargs
+        )
+    except TypeError:
+        model = timm.create_model(timm_name, **create_kwargs)
+
+    print(
+        f"Loaded DINOv2 teacher via timm: {timm_name} "
+        f"(img_size={img_size}, dynamic_img_size=True)"
+    )
     return model
 
 
@@ -84,7 +104,9 @@ class DINOv2Teacher(nn.Module):
 
         if checkpoint_path is not None and os.path.exists(checkpoint_path):
             if self.loader == "timm":
-                self.model = _load_dinov2_timm(model_name, pretrained=False)
+                self.model = _load_dinov2_timm(
+                    model_name, pretrained=False, img_size=self.img_size
+                )
             else:
                 self.model = _load_dinov2_torch_hub(model_name, pretrained=False)
             state_dict = torch.load(checkpoint_path, map_location="cpu")
@@ -95,7 +117,9 @@ class DINOv2Teacher(nn.Module):
             if msg.unexpected_keys:
                 print("DINOv2 unexpected keys:", msg.unexpected_keys)
         elif self.loader == "timm":
-            self.model = _load_dinov2_timm(model_name, pretrained=True)
+            self.model = _load_dinov2_timm(
+                model_name, pretrained=True, img_size=self.img_size
+            )
         else:
             self.model = _load_dinov2_torch_hub(model_name, pretrained=True)
             print(f"Loaded DINOv2 teacher via torch.hub: {model_name}")
