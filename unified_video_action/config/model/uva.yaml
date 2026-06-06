@@ -1,8 +1,3 @@
-defaults:
-  - _self_
-  - override student_tokenizer@model.policy: none
-  - override teacher@model.policy: vae
-
 _target_: unified_video_action.workspace.train_unified_video_action_workspace.TrainUnifiedVideoActionWorkspace
 
 policy:

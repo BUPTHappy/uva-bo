@@ -4,8 +4,6 @@ defaults:
   - _self_
   - task: libero10
   - model: uva
-  - override /model/student_tokenizer@model.policy: small
-  - override /model/teacher@model.policy: dinov2
 
 dataloader:
   batch_size: 16
@@ -76,6 +74,25 @@ multi_run:
 
 model:
   policy:
+    use_student_tokenizer: true
+    teacher_type: dinov2
+    student_tokenizer_params:
+      img_size: 256
+      patch_size: 16
+      in_channels: 3
+      latent_channels: 16
+      hidden_dim: 384
+      depth: 6
+      num_heads: 8
+      mlp_ratio: 4.0
+      dropout: 0.0
+      use_temporal_mixer: true
+      temporal_kernel_size: 3
+    dinov2_teacher_params:
+      model_name: dinov2_vits14
+      img_size: 224
+      checkpoint_path: null
+      loader: timm
     autoregressive_model_params:
       pretrained_model_path: checkpoints/libero10_video.ckpt
     action_model_params:
