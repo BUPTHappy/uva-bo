@@ -1,0 +1,13 @@
+use_student_tokenizer: true
+student_tokenizer_params:
+  img_size: 256
+  patch_size: 16
+  in_channels: 3
+  latent_channels: 16
+  hidden_dim: 384
+  depth: 6
+  num_heads: 8
+  mlp_ratio: 4.0
+  dropout: 0.0
+  use_temporal_mixer: true
+  temporal_kernel_size: 3
