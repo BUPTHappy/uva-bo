@@ -92,6 +92,7 @@ model:
       model_name: dinov2_vits14
       img_size: 224
       checkpoint_path: null
+      loader: timm
     align_params:
       enable: true
       coeff: 0.1

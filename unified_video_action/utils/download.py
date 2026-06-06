@@ -57,11 +57,14 @@ def download_pretrained_marh(overwrite=False):
 
 def download_pretrained_dinov2_vits14(overwrite=False):
     import torch
+    import timm
 
     download_path = "pretrained_models/dinov2/dinov2_vits14_pretrain.pth"
     if not os.path.exists(download_path) or overwrite:
-        print("Downloading DINOv2 ViT-S/14 via torch.hub...")
-        model = torch.hub.load("facebookresearch/dinov2", "dinov2_vits14")
+        print("Downloading DINOv2 ViT-S/14 via timm...")
+        model = timm.create_model(
+            "vit_small_patch14_dinov2.lvd142m", pretrained=True, num_classes=0
+        )
         os.makedirs("pretrained_models/dinov2", exist_ok=True)
         torch.save(model.state_dict(), download_path)
         print(f"Saved DINOv2 checkpoint to {download_path}")
