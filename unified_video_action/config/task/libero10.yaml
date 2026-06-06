@@ -2,11 +2,15 @@ name: libero10
 task_type: single_dataset
 task_modes: []
 
+img_obs_horizon: 16
+action_horizon: 32
+
 shape_meta: &shape_meta
   image_resolution: 128
   action:
     shape:
     - 10
+    horizon: ${task.action_horizon}
   obs:
     agentview_rgb:
       shape:
@@ -14,6 +18,7 @@ shape_meta: &shape_meta
       - 128
       - 128
       type: rgb
+      horizon: ${task.img_obs_horizon}
     language:
       shape:
       - 15
@@ -23,6 +28,7 @@ shape_meta_env: &shape_meta_env
   action:
     shape:
     - 10
+    horizon: ${task.action_horizon}
   obs:
     agentview_image:
       shape:
@@ -30,6 +36,7 @@ shape_meta_env: &shape_meta_env
       - 128
       - 128
       type: rgb
+      horizon: ${task.img_obs_horizon}
       
 dataset:
   _target_: unified_video_action.dataset.libero_replay_image_dataset.LiberoReplayImageDataset
