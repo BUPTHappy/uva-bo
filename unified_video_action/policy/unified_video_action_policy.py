@@ -29,6 +29,7 @@ from unified_video_action.utils.language_model import (
     extract_text_features,
 )
 from unified_video_action.model.common.student_tokenizer import StudentLatentTokenizer
+from unified_video_action.model.common.dinov2_teacher import DINOv2Teacher
 
 
 class UnifiedVideoActionPolicy(BaseImagePolicy):
@@ -81,6 +82,8 @@ class UnifiedVideoActionPolicy(BaseImagePolicy):
         self.use_student_tokenizer = bool(kwargs.get("use_student_tokenizer", False))
         self.student_tokenizer_params = kwargs.get("student_tokenizer_params", None)
         self.align_params = kwargs.get("align_params", {})
+        self.teacher_type = str(kwargs.get("teacher_type", "vae")).lower()
+        self.dinov2_teacher_params = kwargs.get("dinov2_teacher_params", {})
 
         # Alignment defaults are intentionally conservative for stable joint training.
         self.use_alignment = bool(self.align_params.get("enable", False))
@@ -95,12 +98,27 @@ class UnifiedVideoActionPolicy(BaseImagePolicy):
         self.align_stats_coeff = float(self.align_params.get("stats_coeff", 0.1))
         self._last_align_metrics = {}
 
+        if self.teacher_type not in ("vae", "dinov2"):
+            raise ValueError(
+                f"Unsupported teacher_type={self.teacher_type!r}. "
+                "Expected 'vae' or 'dinov2'."
+            )
+        if self.teacher_type == "dinov2" and not self.use_student_tokenizer:
+            raise ValueError("teacher_type=dinov2 requires use_student_tokenizer=True.")
+
         ## =========================== load vae model ===========================
         with torch.no_grad():
             self.vae_model = AutoencoderKL(**vae_model_params)
         self.vae_model.eval()
         for param in self.vae_model.parameters():
             param.requires_grad = False
+
+        # =========================== teacher model ===========================
+        self.dino_teacher = None
+        self.teacher_token_dim = int(autoregressive_model_params.vae_embed_dim)
+        if self.teacher_type == "dinov2":
+            self.dino_teacher = DINOv2Teacher(**self.dinov2_teacher_params)
+            self.teacher_token_dim = int(self.dino_teacher.feat_dim)
 
         # =========================== student tokenizer ===========================
         self.student_tokenizer = None
@@ -111,20 +129,29 @@ class UnifiedVideoActionPolicy(BaseImagePolicy):
                     "use_student_tokenizer=True but student_tokenizer_params is not provided."
                 )
             self.student_tokenizer = StudentLatentTokenizer(**self.student_tokenizer_params)
-            if self.use_alignment and self.align_use_projector:
-                hidden_dim = int(self.student_tokenizer_params.get("hidden_dim", 384))
-                latent_dim = int(
+            if self.teacher_type == "vae":
+                self.teacher_token_dim = int(
                     self.student_tokenizer_params.get(
                         "latent_channels", autoregressive_model_params.vae_embed_dim
                     )
                 )
-                self.align_projector = torch.nn.Sequential(
-                    torch.nn.Linear(hidden_dim, self.align_projector_dim),
-                    torch.nn.SiLU(),
-                    torch.nn.Linear(self.align_projector_dim, self.align_projector_dim),
-                    torch.nn.SiLU(),
-                    torch.nn.Linear(self.align_projector_dim, latent_dim),
-                )
+
+            if self.use_alignment:
+                hidden_dim = int(self.student_tokenizer_params.get("hidden_dim", 384))
+                if hidden_dim == self.teacher_token_dim:
+                    self.align_use_projector = False
+                if self.align_use_projector:
+                    self.align_projector = torch.nn.Sequential(
+                        torch.nn.Linear(hidden_dim, self.align_projector_dim),
+                        torch.nn.SiLU(),
+                        torch.nn.Linear(
+                            self.align_projector_dim, self.align_projector_dim
+                        ),
+                        torch.nn.SiLU(),
+                        torch.nn.Linear(
+                            self.align_projector_dim, self.teacher_token_dim
+                        ),
+                    )
 
         ## =========================== load language model ===========================
         self.text_model, self.tokenizer, self.max_length = get_text_model(
@@ -431,6 +458,12 @@ class UnifiedVideoActionPolicy(BaseImagePolicy):
 
         return optimizer
 
+    def _extract_teacher_tokens(self, x: torch.Tensor) -> torch.Tensor:
+        if self.teacher_type == "dinov2":
+            return self.dino_teacher.extract_tokens(x)
+        teacher_z = self._extract_teacher_latent(x)
+        return self._latent_to_tokens(teacher_z)
+
     def _extract_teacher_latent(self, x: torch.Tensor) -> torch.Tensor:
         """
         Teacher path (frozen VAE): x [B, C, T, H, W] -> z [B, T, C_lat, H_lat, W_lat]
@@ -461,10 +494,56 @@ class UnifiedVideoActionPolicy(BaseImagePolicy):
         latent, token_feat = self.student_tokenizer(x)
         return latent, token_feat
 
+    def _resample_teacher_tokens(
+        self, student_tokens: torch.Tensor, teacher_tokens: torch.Tensor
+    ) -> torch.Tensor:
+        if student_tokens.shape[1:3] == teacher_tokens.shape[1:3]:
+            return teacher_tokens
+
+        bsz, timesteps, student_tokens_count, _ = student_tokens.shape
+        _, _, teacher_tokens_count, feat_dim = teacher_tokens.shape
+        if timesteps != teacher_tokens.shape[1] or feat_dim != teacher_tokens.shape[3]:
+            raise ValueError(
+                "Teacher/student token shape mismatch: "
+                f"student={student_tokens.shape}, teacher={teacher_tokens.shape}"
+            )
+
+        student_side = int(student_tokens_count**0.5)
+        teacher_side = int(teacher_tokens_count**0.5)
+        if student_side * student_side != student_tokens_count:
+            raise ValueError(
+                f"Student token count {student_tokens_count} is not a perfect square."
+            )
+        if teacher_side * teacher_side != teacher_tokens_count:
+            raise ValueError(
+                f"Teacher token count {teacher_tokens_count} is not a perfect square."
+            )
+
+        teacher_map = teacher_tokens.reshape(
+            bsz, timesteps, teacher_side, teacher_side, feat_dim
+        )
+        teacher_map = (
+            teacher_map.permute(0, 1, 4, 2, 3)
+            .reshape(bsz * timesteps, feat_dim, teacher_side, teacher_side)
+        )
+        teacher_map = F.interpolate(
+            teacher_map,
+            size=(student_side, student_side),
+            mode="bilinear",
+            align_corners=False,
+        )
+        teacher_map = teacher_map.reshape(
+            bsz, timesteps, feat_dim, student_side, student_side
+        )
+        return teacher_map.permute(0, 1, 3, 4, 2).reshape(
+            bsz, timesteps, student_tokens_count, feat_dim
+        )
+
     def _compute_alignment_loss(
         self, student_tokens: torch.Tensor, teacher_tokens: torch.Tensor
     ):
         student_tokens_raw = student_tokens
+        teacher_tokens = self._resample_teacher_tokens(student_tokens, teacher_tokens)
         if self.align_projector is not None:
             student_tokens = self.align_projector(student_tokens)
 
@@ -568,10 +647,8 @@ class UnifiedVideoActionPolicy(BaseImagePolicy):
                     proprioception_input["pred_second_image_z"] = pred_second_image_z
 
             if self.use_alignment:
-                teacher_z = self._extract_teacher_latent(x_img)
-                teacher_c = self._extract_teacher_latent(c_img)
-                teacher_z_tokens = self._latent_to_tokens(teacher_z)
-                teacher_c_tokens = self._latent_to_tokens(teacher_c)
+                teacher_z_tokens = self._extract_teacher_tokens(x_img)
+                teacher_c_tokens = self._extract_teacher_tokens(c_img)
                 align_z, metrics_z = self._compute_alignment_loss(z_feat, teacher_z_tokens)
                 align_c, metrics_c = self._compute_alignment_loss(c_feat, teacher_c_tokens)
                 align_loss = 0.5 * (align_z + align_c)

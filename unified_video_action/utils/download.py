@@ -55,8 +55,20 @@ def download_pretrained_marh(overwrite=False):
                     f.write(chunk)
 
 
+def download_pretrained_dinov2_vits14(overwrite=False):
+    import torch
+
+    download_path = "pretrained_models/dinov2/dinov2_vits14_pretrain.pth"
+    if not os.path.exists(download_path) or overwrite:
+        print("Downloading DINOv2 ViT-S/14 via torch.hub...")
+        model = torch.hub.load("facebookresearch/dinov2", "dinov2_vits14")
+        os.makedirs("pretrained_models/dinov2", exist_ok=True)
+        torch.save(model.state_dict(), download_path)
+        print(f"Saved DINOv2 checkpoint to {download_path}")
+
+
 if __name__ == "__main__":
     download_pretrained_vae()
     download_pretrained_marb()
-    
+
     
