@@ -1,9 +1,9 @@
 name: uva
 
 defaults:
-  - _self_
   - task: libero10
   - model: uva
+  - _self_
 
 dataloader:
   batch_size: 32
