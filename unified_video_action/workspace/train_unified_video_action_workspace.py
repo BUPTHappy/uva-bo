@@ -220,6 +220,27 @@ class TrainUnifiedVideoActionWorkspace(BaseWorkspace):
                 self.load_checkpoint(path=lastest_ckpt_path)
                 resumed_from_ckpt = True
 
+        warm_start_ckpt = OmegaConf.select(cfg, "training.warm_start_checkpoint", default=None)
+        if warm_start_ckpt is not None and str(warm_start_ckpt).strip() != "":
+            warm_start_path = pathlib.Path(str(warm_start_ckpt))
+            if warm_start_path.is_file():
+                accelerator.print(
+                    f"Warm-starting weights from {warm_start_path} "
+                    "(optimizer/lr reset, epoch=0)"
+                )
+                self.load_checkpoint(
+                    path=warm_start_path,
+                    exclude_keys=("optimizer", "lr_scheduler"),
+                    include_keys=tuple(),
+                    strict=False,
+                )
+                self.global_step = 0
+                self.epoch = 0
+            else:
+                accelerator.print(
+                    f"warm_start_checkpoint not found: {warm_start_path}"
+                )
+
         _rollout_immediately_after_resume = _cfg_truthy(
             self.cfg, "training.rollout_immediately_after_resume", default=False
         )

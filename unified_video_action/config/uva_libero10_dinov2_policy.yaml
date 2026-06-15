@@ -30,6 +30,7 @@ training:
   max_val_steps: null
   num_epochs: 3050
   resume: false
+  warm_start_checkpoint: checkpoints/libero10_video.ckpt
   rollout_immediately_after_resume: false
   rollout_every: 50
   sample_every: 5
@@ -94,7 +95,7 @@ model:
       checkpoint_path: null
       loader: timm
     autoregressive_model_params:
-      pretrained_model_path: checkpoints/libero10_video.ckpt
+      pretrained_model_path: null
     action_model_params:
       predict_action: true
     align_params:

@@ -79,7 +79,9 @@ class BaseWorkspace:
     def get_checkpoint_path(self, tag="latest"):
         return pathlib.Path(self.output_dir).joinpath("checkpoints", f"{tag}.ckpt")
 
-    def load_payload(self, payload, exclude_keys=None, include_keys=None, **kwargs):
+    def load_payload(
+        self, payload, exclude_keys=None, include_keys=None, strict=True, **kwargs
+    ):
         if exclude_keys is None:
             exclude_keys = tuple()
         if include_keys is None:
@@ -103,7 +105,9 @@ class BaseWorkspace:
                     if key == "optimizer" and "base_optimizer_state" in value_new:
                         # value_new = value_new["base_optimizer_state"]
                         continue  # HACK: optimizer state is not compatible with multi-node training. Should use accelerate.load_state
-                    self.__dict__[key].load_state_dict(value_new, **kwargs)
+                    self.__dict__[key].load_state_dict(
+                        value_new, strict=strict, **kwargs
+                    )
                 except Exception as e:
                     print(f"{key=}, {value_new.keys()=}, {value_new=}, {kwargs=}")
                     raise e
@@ -117,21 +121,34 @@ class BaseWorkspace:
                     value_new[k.replace("module.", "")] = value[k]
                 else:
                     value_new[k] = value[k]
-            self.__dict__["model"].load_state_dict(value_new, **kwargs)
+            self.__dict__["model"].load_state_dict(
+                value_new, strict=strict, **kwargs
+            )
 
         for key in include_keys:
             if key in payload["pickles"]:
                 self.__dict__[key] = dill.loads(payload["pickles"][key])
 
     def load_checkpoint(
-        self, path=None, tag="latest", exclude_keys=None, include_keys=None, **kwargs
+        self,
+        path=None,
+        tag="latest",
+        exclude_keys=None,
+        include_keys=None,
+        strict=True,
+        **kwargs,
     ):
         if path is None:
             path = self.get_checkpoint_path(tag=tag)
         else:
             path = pathlib.Path(path)
         payload = torch.load(path.open("rb"), pickle_module=dill, **kwargs)
-        self.load_payload(payload, exclude_keys=exclude_keys, include_keys=include_keys)
+        self.load_payload(
+            payload,
+            exclude_keys=exclude_keys,
+            include_keys=include_keys,
+            strict=strict,
+        )
         return payload
 
     @classmethod
