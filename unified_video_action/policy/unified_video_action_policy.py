@@ -96,7 +96,15 @@ class UnifiedVideoActionPolicy(BaseImagePolicy):
         self.align_projector_dim = int(self.align_params.get("projector_dim", 512))
         self.align_mse_coeff = float(self.align_params.get("mse_coeff", 0.25))
         self.align_stats_coeff = float(self.align_params.get("stats_coeff", 0.1))
+        default_align_on = "latent" if self.teacher_type == "dinov2" else "token_feat"
+        self.align_on = str(self.align_params.get("align_on", default_align_on)).lower()
         self._last_align_metrics = {}
+
+        if self.align_on not in ("token_feat", "latent"):
+            raise ValueError(
+                f"Unsupported align_on={self.align_on!r}. "
+                "Expected 'token_feat' or 'latent'."
+            )
 
         if self.teacher_type not in ("vae", "dinov2"):
             raise ValueError(
@@ -115,43 +123,67 @@ class UnifiedVideoActionPolicy(BaseImagePolicy):
 
         # =========================== teacher model ===========================
         self.dino_teacher = None
-        self.teacher_token_dim = int(autoregressive_model_params.vae_embed_dim)
+        self.dino_feat_dim = None
+        self.latent_dim = int(autoregressive_model_params.vae_embed_dim)
         if self.teacher_type == "dinov2":
             self.dino_teacher = DINOv2Teacher(**self.dinov2_teacher_params)
-            self.teacher_token_dim = int(self.dino_teacher.feat_dim)
+            self.dino_feat_dim = int(self.dino_teacher.feat_dim)
 
         # =========================== student tokenizer ===========================
         self.student_tokenizer = None
         self.align_projector = None
+        self.dino_teacher_projector = None
         if self.use_student_tokenizer:
             if self.student_tokenizer_params is None:
                 raise ValueError(
                     "use_student_tokenizer=True but student_tokenizer_params is not provided."
                 )
             self.student_tokenizer = StudentLatentTokenizer(**self.student_tokenizer_params)
-            if self.teacher_type == "vae":
-                self.teacher_token_dim = int(
-                    self.student_tokenizer_params.get(
-                        "latent_channels", autoregressive_model_params.vae_embed_dim
-                    )
+            self.latent_dim = int(
+                self.student_tokenizer_params.get(
+                    "latent_channels", autoregressive_model_params.vae_embed_dim
                 )
+            )
 
             if self.use_alignment:
                 hidden_dim = int(self.student_tokenizer_params.get("hidden_dim", 384))
-                if hidden_dim == self.teacher_token_dim:
+                if self.align_on == "latent":
                     self.align_use_projector = False
-                if self.align_use_projector:
-                    self.align_projector = torch.nn.Sequential(
-                        torch.nn.Linear(hidden_dim, self.align_projector_dim),
-                        torch.nn.SiLU(),
-                        torch.nn.Linear(
-                            self.align_projector_dim, self.align_projector_dim
-                        ),
-                        torch.nn.SiLU(),
-                        torch.nn.Linear(
-                            self.align_projector_dim, self.teacher_token_dim
-                        ),
-                    )
+                    if self.teacher_type == "dinov2":
+                        self.dino_teacher_projector = self._build_align_mlp(
+                            in_dim=self.dino_feat_dim,
+                            hidden_dim=self.align_projector_dim,
+                            out_dim=self.latent_dim,
+                        )
+                elif self.teacher_type == "vae":
+                    if hidden_dim == self.latent_dim:
+                        self.align_use_projector = False
+                    if self.align_use_projector:
+                        self.align_projector = self._build_align_mlp(
+                            in_dim=hidden_dim,
+                            hidden_dim=self.align_projector_dim,
+                            out_dim=self.latent_dim,
+                        )
+                elif self.teacher_type == "dinov2":
+                    if hidden_dim == self.dino_feat_dim:
+                        self.align_use_projector = False
+                    if self.align_use_projector:
+                        self.align_projector = self._build_align_mlp(
+                            in_dim=hidden_dim,
+                            hidden_dim=self.align_projector_dim,
+                            out_dim=self.dino_feat_dim,
+                        )
+
+                print("----------------------------------------------------------------------")
+                print(
+                    f"alignment: teacher={self.teacher_type}, align_on={self.align_on}, "
+                    f"latent_dim={self.latent_dim}"
+                )
+                print(
+                    f"student_projector={self.align_projector is not None}, "
+                    f"dino_teacher_projector={self.dino_teacher_projector is not None}"
+                )
+                print("----------------------------------------------------------------------")
 
         ## =========================== load language model ===========================
         self.text_model, self.tokenizer, self.max_length = get_text_model(
@@ -447,6 +479,12 @@ class UnifiedVideoActionPolicy(BaseImagePolicy):
             optim_groups.extend(
                 self.add_weight_decay(self.align_projector, weight_decay=weight_decay)
             )
+        if self.dino_teacher_projector is not None:
+            optim_groups.extend(
+                self.add_weight_decay(
+                    self.dino_teacher_projector, weight_decay=weight_decay
+                )
+            )
         optimizer = torch.optim.AdamW(optim_groups, lr=learning_rate, betas=betas)
 
         # Manually set 'initial_lr' for each parameter group (assuming a base learning rate)
@@ -457,6 +495,30 @@ class UnifiedVideoActionPolicy(BaseImagePolicy):
                 ]  # or set a specific initial learning rate
 
         return optimizer
+
+    @staticmethod
+    def _build_align_mlp(in_dim: int, hidden_dim: int, out_dim: int) -> torch.nn.Sequential:
+        return torch.nn.Sequential(
+            torch.nn.Linear(in_dim, hidden_dim),
+            torch.nn.SiLU(),
+            torch.nn.Linear(hidden_dim, hidden_dim),
+            torch.nn.SiLU(),
+            torch.nn.Linear(hidden_dim, out_dim),
+        )
+
+    def _student_tokens_for_alignment(
+        self, latent: torch.Tensor, token_feat: torch.Tensor
+    ) -> torch.Tensor:
+        if self.align_on == "latent":
+            return self._latent_to_tokens(latent)
+        return token_feat
+
+    def _prepare_teacher_tokens_for_alignment(
+        self, teacher_tokens: torch.Tensor
+    ) -> torch.Tensor:
+        if self.dino_teacher_projector is not None:
+            return self.dino_teacher_projector(teacher_tokens)
+        return teacher_tokens
 
     def _extract_teacher_tokens(self, x: torch.Tensor) -> torch.Tensor:
         if self.teacher_type == "dinov2":
@@ -647,10 +709,20 @@ class UnifiedVideoActionPolicy(BaseImagePolicy):
                     proprioception_input["pred_second_image_z"] = pred_second_image_z
 
             if self.use_alignment:
-                teacher_z_tokens = self._extract_teacher_tokens(x_img)
-                teacher_c_tokens = self._extract_teacher_tokens(c_img)
-                align_z, metrics_z = self._compute_alignment_loss(z_feat, teacher_z_tokens)
-                align_c, metrics_c = self._compute_alignment_loss(c_feat, teacher_c_tokens)
+                teacher_z_tokens = self._prepare_teacher_tokens_for_alignment(
+                    self._extract_teacher_tokens(x_img)
+                )
+                teacher_c_tokens = self._prepare_teacher_tokens_for_alignment(
+                    self._extract_teacher_tokens(c_img)
+                )
+                student_z_tokens = self._student_tokens_for_alignment(z, z_feat)
+                student_c_tokens = self._student_tokens_for_alignment(c, c_feat)
+                align_z, metrics_z = self._compute_alignment_loss(
+                    student_z_tokens, teacher_z_tokens
+                )
+                align_c, metrics_c = self._compute_alignment_loss(
+                    student_c_tokens, teacher_c_tokens
+                )
                 align_loss = 0.5 * (align_z + align_c)
                 self._last_align_metrics = {
                     "align_loss": align_loss.detach(),
@@ -701,6 +773,11 @@ class UnifiedVideoActionPolicy(BaseImagePolicy):
 
         if self.align_projector is not None:
             for param in self.align_projector.parameters():
+                if param.requires_grad:
+                    loss = loss + _ddp_unused_term(param)
+
+        if self.dino_teacher_projector is not None:
+            for param in self.dino_teacher_projector.parameters():
                 if param.requires_grad:
                     loss = loss + _ddp_unused_term(param)
 

@@ -98,6 +98,7 @@ model:
       coeff: 0.1
       loss_type: hybrid
       teacher_mode: sample
+      align_on: latent
       use_projector: false
       projector_dim: 512
       mse_coeff: 0.25
