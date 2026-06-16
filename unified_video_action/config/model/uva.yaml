@@ -21,6 +21,13 @@ policy:
     img_size: 224
     checkpoint_path: null
     loader: timm
+  jepa_teacher_params:
+    model_name: vjepa2_vit_large
+    img_size: 256
+    tubelet_size: 2
+    checkpoint_path: null
+    checkpoint_key: target_encoder
+    loader: torch_hub
   align_params:
     enable: false
     coeff: 0.1

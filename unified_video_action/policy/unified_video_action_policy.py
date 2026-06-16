@@ -30,6 +30,9 @@ from unified_video_action.utils.language_model import (
 )
 from unified_video_action.model.common.student_tokenizer import StudentLatentTokenizer
 from unified_video_action.model.common.dinov2_teacher import DINOv2Teacher
+from unified_video_action.model.common.jepa_teacher import JEPATeacher
+
+LATENT_ALIGNMENT_TEACHERS = ("dinov2", "jepa")
 
 
 class UnifiedVideoActionPolicy(BaseImagePolicy):
@@ -84,6 +87,7 @@ class UnifiedVideoActionPolicy(BaseImagePolicy):
         self.align_params = kwargs.get("align_params", {})
         self.teacher_type = str(kwargs.get("teacher_type", "vae")).lower()
         self.dinov2_teacher_params = kwargs.get("dinov2_teacher_params", {})
+        self.jepa_teacher_params = kwargs.get("jepa_teacher_params", {})
 
         # Alignment defaults are intentionally conservative for stable joint training.
         self.use_alignment = bool(self.align_params.get("enable", False))
@@ -96,7 +100,9 @@ class UnifiedVideoActionPolicy(BaseImagePolicy):
         self.align_projector_dim = int(self.align_params.get("projector_dim", 512))
         self.align_mse_coeff = float(self.align_params.get("mse_coeff", 0.25))
         self.align_stats_coeff = float(self.align_params.get("stats_coeff", 0.1))
-        default_align_on = "latent" if self.teacher_type == "dinov2" else "token_feat"
+        default_align_on = (
+            "latent" if self.teacher_type in LATENT_ALIGNMENT_TEACHERS else "token_feat"
+        )
         self.align_on = str(self.align_params.get("align_on", default_align_on)).lower()
         self._last_align_metrics = {}
 
@@ -106,13 +112,15 @@ class UnifiedVideoActionPolicy(BaseImagePolicy):
                 "Expected 'token_feat' or 'latent'."
             )
 
-        if self.teacher_type not in ("vae", "dinov2"):
+        if self.teacher_type not in ("vae", "dinov2", "jepa"):
             raise ValueError(
                 f"Unsupported teacher_type={self.teacher_type!r}. "
-                "Expected 'vae' or 'dinov2'."
+                "Expected 'vae', 'dinov2', or 'jepa'."
             )
-        if self.teacher_type == "dinov2" and not self.use_student_tokenizer:
-            raise ValueError("teacher_type=dinov2 requires use_student_tokenizer=True.")
+        if self.teacher_type in LATENT_ALIGNMENT_TEACHERS and not self.use_student_tokenizer:
+            raise ValueError(
+                f"teacher_type={self.teacher_type} requires use_student_tokenizer=True."
+            )
 
         ## =========================== load vae model ===========================
         with torch.no_grad():
@@ -123,16 +131,20 @@ class UnifiedVideoActionPolicy(BaseImagePolicy):
 
         # =========================== teacher model ===========================
         self.dino_teacher = None
-        self.dino_feat_dim = None
+        self.jepa_teacher = None
+        self.teacher_feat_dim = None
         self.latent_dim = int(autoregressive_model_params.vae_embed_dim)
         if self.teacher_type == "dinov2":
             self.dino_teacher = DINOv2Teacher(**self.dinov2_teacher_params)
-            self.dino_feat_dim = int(self.dino_teacher.feat_dim)
+            self.teacher_feat_dim = int(self.dino_teacher.feat_dim)
+        elif self.teacher_type == "jepa":
+            self.jepa_teacher = JEPATeacher(**self.jepa_teacher_params)
+            self.teacher_feat_dim = int(self.jepa_teacher.feat_dim)
 
         # =========================== student tokenizer ===========================
         self.student_tokenizer = None
         self.align_projector = None
-        self.dino_teacher_projector = None
+        self.teacher_latent_projector = None
         if self.use_student_tokenizer:
             if self.student_tokenizer_params is None:
                 raise ValueError(
@@ -149,9 +161,9 @@ class UnifiedVideoActionPolicy(BaseImagePolicy):
                 hidden_dim = int(self.student_tokenizer_params.get("hidden_dim", 384))
                 if self.align_on == "latent":
                     self.align_use_projector = False
-                    if self.teacher_type == "dinov2":
-                        self.dino_teacher_projector = self._build_align_mlp(
-                            in_dim=self.dino_feat_dim,
+                    if self.teacher_type in LATENT_ALIGNMENT_TEACHERS:
+                        self.teacher_latent_projector = self._build_align_mlp(
+                            in_dim=self.teacher_feat_dim,
                             hidden_dim=self.align_projector_dim,
                             out_dim=self.latent_dim,
                         )
@@ -165,13 +177,22 @@ class UnifiedVideoActionPolicy(BaseImagePolicy):
                             out_dim=self.latent_dim,
                         )
                 elif self.teacher_type == "dinov2":
-                    if hidden_dim == self.dino_feat_dim:
+                    if hidden_dim == self.teacher_feat_dim:
                         self.align_use_projector = False
                     if self.align_use_projector:
                         self.align_projector = self._build_align_mlp(
                             in_dim=hidden_dim,
                             hidden_dim=self.align_projector_dim,
-                            out_dim=self.dino_feat_dim,
+                            out_dim=self.teacher_feat_dim,
+                        )
+                elif self.teacher_type == "jepa":
+                    if hidden_dim == self.teacher_feat_dim:
+                        self.align_use_projector = False
+                    if self.align_use_projector:
+                        self.align_projector = self._build_align_mlp(
+                            in_dim=hidden_dim,
+                            hidden_dim=self.align_projector_dim,
+                            out_dim=self.teacher_feat_dim,
                         )
 
                 print("----------------------------------------------------------------------")
@@ -181,7 +202,7 @@ class UnifiedVideoActionPolicy(BaseImagePolicy):
                 )
                 print(
                     f"student_projector={self.align_projector is not None}, "
-                    f"dino_teacher_projector={self.dino_teacher_projector is not None}"
+                    f"teacher_latent_projector={self.teacher_latent_projector is not None}"
                 )
                 print("----------------------------------------------------------------------")
 
@@ -479,10 +500,10 @@ class UnifiedVideoActionPolicy(BaseImagePolicy):
             optim_groups.extend(
                 self.add_weight_decay(self.align_projector, weight_decay=weight_decay)
             )
-        if self.dino_teacher_projector is not None:
+        if self.teacher_latent_projector is not None:
             optim_groups.extend(
                 self.add_weight_decay(
-                    self.dino_teacher_projector, weight_decay=weight_decay
+                    self.teacher_latent_projector, weight_decay=weight_decay
                 )
             )
         optimizer = torch.optim.AdamW(optim_groups, lr=learning_rate, betas=betas)
@@ -516,13 +537,15 @@ class UnifiedVideoActionPolicy(BaseImagePolicy):
     def _prepare_teacher_tokens_for_alignment(
         self, teacher_tokens: torch.Tensor
     ) -> torch.Tensor:
-        if self.dino_teacher_projector is not None:
-            return self.dino_teacher_projector(teacher_tokens)
+        if self.teacher_latent_projector is not None:
+            return self.teacher_latent_projector(teacher_tokens)
         return teacher_tokens
 
     def _extract_teacher_tokens(self, x: torch.Tensor) -> torch.Tensor:
         if self.teacher_type == "dinov2":
             return self.dino_teacher.extract_tokens(x)
+        if self.teacher_type == "jepa":
+            return self.jepa_teacher.extract_tokens(x)
         teacher_z = self._extract_teacher_latent(x)
         return self._latent_to_tokens(teacher_z)
 
@@ -776,8 +799,8 @@ class UnifiedVideoActionPolicy(BaseImagePolicy):
                 if param.requires_grad:
                     loss = loss + _ddp_unused_term(param)
 
-        if self.dino_teacher_projector is not None:
-            for param in self.dino_teacher_projector.parameters():
+        if self.teacher_latent_projector is not None:
+            for param in self.teacher_latent_projector.parameters():
                 if param.requires_grad:
                     loss = loss + _ddp_unused_term(param)
 
