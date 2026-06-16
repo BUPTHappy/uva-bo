@@ -1,5 +1,8 @@
 #!/bin/sh
 
+# One-time per machine (recommended before first multi-GPU run):
+#   sh scripts/setup_jepa_teacher.sh
+
 # Warm-start from video ckpt, align student latent to JEPA latent (policy stage).
 accelerate launch --num_processes=3 train.py \
   --config-dir=unified_video_action/config \

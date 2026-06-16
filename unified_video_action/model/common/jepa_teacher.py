@@ -1,4 +1,5 @@
 import os
+import time
 from typing import Optional
 
 import torch
@@ -7,6 +8,8 @@ import torch.nn.functional as F
 
 IMAGENET_MEAN = (0.485, 0.456, 0.406)
 IMAGENET_STD = (0.229, 0.224, 0.225)
+
+VJEPA2_HUB_REPO = "facebookresearch/vjepa2"
 
 # torch.hub entry in facebookresearch/vjepa2 -> (embed_dim, default_img_size)
 VJEPA2_HUB_MODELS = {
@@ -26,6 +29,66 @@ VJEPA2_CHECKPOINT_URLS = {
     "vjepa2_vit_giant": "https://dl.fbaipublicfiles.com/vjepa2/vitg.pt",
     "vjepa2_vit_giant_384": "https://dl.fbaipublicfiles.com/vjepa2/vitg-384.pt",
 }
+
+
+def _resolve_checkpoint_path(checkpoint_path: Optional[str]) -> Optional[str]:
+    if checkpoint_path is None or str(checkpoint_path).strip() == "":
+        return None
+    resolved = os.path.abspath(str(checkpoint_path))
+    if not os.path.isfile(resolved):
+        raise FileNotFoundError(
+            "JEPA checkpoint not found: "
+            f"{resolved}\n"
+            "Download it on this machine, e.g.\n"
+            "  mkdir -p pretrained_models/jepa\n"
+            "  wget https://dl.fbaipublicfiles.com/vjepa2/vitl.pt "
+            "-O pretrained_models/jepa/vitl.pt"
+        )
+    return resolved
+
+
+def _torch_hub_load_locked(repo: str, model: str, pretrained: bool = False, timeout_s: int = 600):
+    hub_dir = torch.hub.get_dir()
+    lock_dir = os.path.join(hub_dir, "locks")
+    os.makedirs(lock_dir, exist_ok=True)
+    lock_path = os.path.join(lock_dir, repo.replace("/", "_") + ".lock")
+
+    deadline = time.time() + timeout_s
+    while time.time() < deadline:
+        try:
+            fd = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            os.close(fd)
+            try:
+                return torch.hub.load(repo, model, pretrained=pretrained)
+            finally:
+                try:
+                    os.remove(lock_path)
+                except FileNotFoundError:
+                    pass
+        except FileExistsError:
+            time.sleep(1.0)
+
+    raise TimeoutError(
+        f"Timed out waiting for torch.hub lock: {lock_path}. "
+        "Another process may still be downloading V-JEPA2."
+    )
+
+
+def _load_vjepa2_hub_encoder(model_name: str, pretrained: bool = False):
+    try:
+        import einops  # noqa: F401
+    except ImportError as exc:
+        raise ImportError(
+            "V-JEPA2 requires `einops`. Install it with: pip install einops"
+        ) from exc
+
+    print(f"Loading V-JEPA2 hub code: {VJEPA2_HUB_REPO}/{model_name}")
+    hub_out = _torch_hub_load_locked(
+        VJEPA2_HUB_REPO, model_name, pretrained=pretrained
+    )
+    if isinstance(hub_out, tuple):
+        return hub_out[0]
+    return hub_out
 
 
 def _clean_vjepa_encoder_state_dict(state_dict):
@@ -83,6 +146,7 @@ class JEPATeacher(nn.Module):
         self.tubelet_size = int(tubelet_size)
         self.loader = str(loader).lower()
         self.checkpoint_key = checkpoint_key
+        checkpoint_path = _resolve_checkpoint_path(checkpoint_path)
 
         if model_name not in VJEPA2_HUB_MODELS:
             raise ValueError(
@@ -98,13 +162,9 @@ class JEPATeacher(nn.Module):
             )
 
         if self.loader == "torch_hub":
-            hub_out = torch.hub.load("facebookresearch/vjepa2", model_name, pretrained=False)
-            if isinstance(hub_out, tuple):
-                self.encoder = hub_out[0]
-            else:
-                self.encoder = hub_out
+            self.encoder = _load_vjepa2_hub_encoder(model_name, pretrained=False)
             print(f"Initialized V-JEPA2 encoder via torch.hub: {model_name}")
-            if checkpoint_path is not None and os.path.exists(checkpoint_path):
+            if checkpoint_path is not None:
                 _load_vjepa2_encoder_from_checkpoint(
                     self.encoder, checkpoint_path, checkpoint_key=self.checkpoint_key
                 )
@@ -112,22 +172,22 @@ class JEPATeacher(nn.Module):
                 url = VJEPA2_CHECKPOINT_URLS.get(model_name)
                 if url is not None:
                     state = torch.hub.load_state_dict_from_url(url, map_location="cpu")
-                    encoder_state = state.get(self.checkpoint_key, state.get("encoder", state))
+                    encoder_state = state.get(
+                        self.checkpoint_key, state.get("encoder", state)
+                    )
                     encoder_state = _clean_vjepa_encoder_state_dict(encoder_state)
                     self.encoder.load_state_dict(encoder_state, strict=False)
                     print(f"Loaded V-JEPA2 encoder weights from {url}")
                 else:
-                    print(
-                        f"No default checkpoint URL for {model_name}; "
-                        "provide jepa_teacher_params.checkpoint_path."
+                    raise FileNotFoundError(
+                        f"No checkpoint_path provided and no default URL for {model_name}."
                     )
         elif self.loader == "checkpoint":
-            if checkpoint_path is None or not os.path.exists(checkpoint_path):
+            if checkpoint_path is None:
                 raise FileNotFoundError(
-                    "loader='checkpoint' requires an existing checkpoint_path."
+                    "loader='checkpoint' requires jepa_teacher_params.checkpoint_path."
                 )
-            hub_out = torch.hub.load("facebookresearch/vjepa2", model_name, pretrained=False)
-            self.encoder = hub_out[0] if isinstance(hub_out, tuple) else hub_out
+            self.encoder = _load_vjepa2_hub_encoder(model_name, pretrained=False)
             _load_vjepa2_encoder_from_checkpoint(
                 self.encoder, checkpoint_path, checkpoint_key=self.checkpoint_key
             )
