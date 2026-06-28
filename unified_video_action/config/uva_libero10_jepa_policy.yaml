@@ -20,7 +20,7 @@ val_dataloader:
   shuffle: false
 
 training:
-  checkpoint_every: 50
+  checkpoint_every: 20
   debug: false
   device: cuda:0
   gradient_accumulate_every: 4
@@ -32,7 +32,7 @@ training:
   resume: false
   warm_start_checkpoint: checkpoints/libero10_video.ckpt
   rollout_immediately_after_resume: false
-  rollout_every: 50
+  rollout_every: 20
   sample_every: 5
   seed: 42
   tqdm_interval_sec: 1.0

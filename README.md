@@ -1,249 +1,423 @@
-# Unified Video Action Model
+# Unified Video Action — Student Tokenizer + Teacher Alignment (Libero10)
 
-[[Project page]](https://unified-video-action-model.github.io/)
-[[Paper]](https://arxiv.org/abs/2503.00200)
-[[Colab (PushT)]](https://colab.research.google.com/drive/1WQfiGat3pTr5DZqWa760zI3JrdH_M86O?usp=sharing)
+This branch (`uva-repa-dinov2`) extends [UVA](https://github.com/...) with a **student latent tokenizer** and **frozen teacher alignment** on the Libero10 benchmark. The MAR backbone still operates on 16-dimensional VAE-style latents; teachers (VAE, DINOv2, or V-JEPA 2) are used only for representation alignment during training.
 
+**Supported teachers**
 
-[Shuang Li](https://shuangli59.github.io/),
-[Yihuai Gao](https://yihuai-gao.github.io/),
-[Dorsa Sadigh](https://dorsa.fyi/),
-[Shuran Song](https://shurans.github.io/)
+| Teacher | Config key | Alignment target | Notes |
+|---------|------------|------------------|-------|
+| VAE (KL-16) | `teacher_type: vae` | `token_feat` or `latent` | Default baseline; VAE also decodes video for MAR |
+| DINOv2 ViT-S/14 | `teacher_type: dinov2` | `token_feat` or `latent` | Loaded via `timm` |
+| V-JEPA 2 | `teacher_type: jepa` | `latent` (recommended) | Requires local checkpoint on each machine |
 
-Stanford University
+---
 
-<img src="media/overview.png" alt="drawing" width="100%"/>
+## Quick start checklist
 
-## 🛝 Try UVA on Colab
-We provide a colab notebook for UVA on [PushT](https://colab.research.google.com/drive/1WQfiGat3pTr5DZqWa760zI3JrdH_M86O?usp=sharing) using the pretrained checkpoint.
+1. Clone this repo and check out `uva-repa-dinov2`
+2. Download base pretrained weights (`python unified_video_action/utils/download.py`)
+3. Create the conda environment (`repa_environment.yml`)
+4. Install MuJoCo + LIBERO dependencies
+5. Download Libero10 data and clone LIBERO
+6. (Optional) Download V-JEPA 2 checkpoints for JEPA teacher experiments
+7. Train the video stage, then warm-start policy training with your chosen teacher
 
+---
 
+## 1. Clone the repository
 
-## 🛠️ Installation
-Install the conda environment:
-```console
-$ conda install mamba -c conda-forge
-```
-```console
-$ mamba env create -f conda_environment.yml
-```
-
-## Simulation Experiments
-### Testing
-Download the pretrained checkpoints from the following links and put them in the `checkpoints/` folder.
-
-* Checkpoint trained on [PushT](https://drive.google.com/file/d/1OduHcxfc2hqUYSccMQNf9g-vAt-q2UhF/view?usp=sharing) 
-* Checkpoint trained on [PushT-M](https://drive.google.com/file/d/1ZppZJyQdEdjhu8TIt4ddyaWy_mSdjoAZ/view?usp=sharing)
-* Checkpoint trained on [Libero10](https://drive.google.com/file/d/11c2VrmaRp48yw__5A5xpcu8EPzkexHSi/view?usp=sharing)
-```
-pip install gdown
-gdown 1OduHcxfc2hqUYSccMQNf9g-vAt-q2UhF -O checkpoints/pusht.ckpt
-gdown 1ZppZJyQdEdjhu8TIt4ddyaWy_mSdjoAZ -O checkpoints/pusht_multitask.ckpt
-gdown 11c2VrmaRp48yw__5A5xpcu8EPzkexHSi -O checkpoints/libero10.ckpt
+```bash
+git clone <your-repo-url> uva-bo
+cd uva-bo
+git checkout uva-repa-dinov2
 ```
 
-```
-CUDA_VISIBLE_DEVICES=0 python eval_sim.py --checkpoint checkpoints/pusht.ckpt --output_dir checkpoints/pusht
-```
+Download VAE and MAR-B weights used by the default UVA config:
 
-```
-CUDA_VISIBLE_DEVICES=0 python eval_sim.py --checkpoint checkpoints/pusht_multitask.ckpt --output_dir checkpoints/pusht_multitask
-```
-
-```
-CUDA_VISIBLE_DEVICES=0 python eval_sim.py --checkpoint checkpoints/libero10.ckpt --output_dir checkpoints/libero10
-```
-
-
-### Training
-
-#### Download Pretrained Models
-We start from a pretrained VAE model and a pretrained image generation model [MAR](https://github.com/LTH14/mar). Run the following command to download the pretrained models.
-```
+```bash
 python unified_video_action/utils/download.py
 ```
 
+This saves:
 
-#### Train Video Generation Model
-We found that two-stage training works better than training on both video and action tasks directly. In the first stage, the model is trained on `video generation` task, and in the second stage, it is fine-tuned on both video and action tasks.
+- `pretrained_models/vae/kl16.ckpt`
+- `pretrained_models/mar/mar_base/checkpoint-last.pth`
 
-To train the UVA model for the video generation task, we set `predict_action=False` and `selected_training_mode=video_model`. We did not incorporate additional video data during training. We believe that pretraining the model on large-scale web video datasets could substantially improve its generalization capabilities, and we plan to explore this approach in future work.
+Optional: uncomment calls in `download.py` to also fetch MAR-L, MAR-H, or cache DINOv2 via timm.
 
-UVA's performance may currently be constrained by the model size. To evaluate it on larger or more complex real-world tasks, please consider using a larger UVA model.
+---
 
-Training video and action model takes longer time than training policy model only. We recommend using at least 4 GPUs for training.
-To train the UVA model on the PushT dataset, run the following command:
+## 2. Environment setup
 
+Install mamba (recommended) and create the environment:
+
+```bash
+conda install mamba -c conda-forge
+mamba env create -f repa_environment.yml
+eval "$(mamba shell hook --shell bash)"
+source ~/.bashrc
+conda activate repa
 ```
+
+The environment name is **`repa`** (Python 3.9).
+
+---
+
+## 3. MuJoCo and LIBERO (simulation rollouts)
+
+Libero10 rollouts require `mujoco-py` and the LIBERO package.
+
+### 3.1 OpenGL / MuJoCo dependencies
+
+```bash
+conda install -y -c conda-forge \
+  glfw glew patchelf mesalib libglvnd libstdcxx-ng \
+  xorg-libx11 xorg-libxrandr xorg-libxinerama xorg-libxi xorg-libxcursor
+```
+
+Install MuJoCo 2.1 (adjust `$HOME` if needed):
+
+```bash
+mkdir -p ~/.mujoco && cd ~/.mujoco
+wget https://mujoco.org/download/mujoco210-linux-x86_64.tar.gz
+tar -xzf mujoco210-linux-x86_64.tar.gz
+cd -
+```
+
+Set environment variables (add these to `~/.bashrc` for persistence):
+
+```bash
+export LD_LIBRARY_PATH=$CONDA_PREFIX/lib:$LD_LIBRARY_PATH
+export CFLAGS="-I$CONDA_PREFIX/include"
+export LDFLAGS="-L$CONDA_PREFIX/lib"
+
+# Some conda builds only ship libGL.so.1 — create an unversioned symlink if missing
+[ -f "$CONDA_PREFIX/lib/libGL.so" ] || ln -s $CONDA_PREFIX/lib/libGL.so.1 $CONDA_PREFIX/lib/libGL.so
+
+export MUJOCO_PY_MUJOCO_PATH=$HOME/.mujoco/mujoco210   # <-- change to your path
+export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:$MUJOCO_PY_MUJOCO_PATH/bin
+```
+
+Verify:
+
+```bash
+python -c "import mujoco_py; print('mujoco-py OK')"
+```
+
+If numba-related errors appear during rollouts:
+
+```bash
+conda install -y -c conda-forge numba==0.56.4 llvmlite==0.39.1
+rm -rf ~/.numba
+export NUMBA_DISABLE_JIT=1
+```
+
+### 3.2 LIBERO package
+
+Clone LIBERO next to (or anywhere on `PYTHONPATH`) this repo:
+
+```bash
+cd ..   # parent of uva-bo
+git clone https://github.com/Lifelong-robot-learning/LIBERO.git
+```
+
+Follow LIBERO's own install instructions if import errors occur.
+
+---
+
+## 4. Download Libero10 dataset
+
+From the repo root (`uva-bo/`):
+
+```bash
+mkdir -p data && cd data
+gdown https://drive.google.com/uc?id=1_6Kc7e-s30MblbX8YjpxSofe9ZRPk3xv
+gdown https://drive.google.com/uc?id=1cPU2RVAvtukyapcWly8zP1y-dlOEF2ko
+unzip libero_10.zip
+cd ..
+```
+
+The config expects data at `data/libero_10` (see `unified_video_action/config/task/libero10.yaml`).
+
+---
+
+## 5. V-JEPA 2 teacher checkpoints
+
+JEPA teachers load **local** weight files. On multi-GPU or multi-node runs, the checkpoint must exist on **every machine** (torch.hub code is shared, weights are not).
+
+### 5.1 One-time setup (ViT-L, default)
+
+```bash
+sh scripts/setup_jepa_teacher.sh
+```
+
+This downloads `pretrained_models/jepa/vitl.pt` and runs a smoke test.
+
+### 5.2 Other supported sizes
+
+| Model | `model_name` | Checkpoint file | Download URL |
+|-------|--------------|-----------------|--------------|
+| ViT-L | `vjepa2_vit_large` | `pretrained_models/jepa/vitl.pt` | https://dl.fbaipublicfiles.com/vjepa2/vitl.pt |
+| ViT-H | `vjepa2_vit_huge` | `pretrained_models/jepa/vith.pt` | https://dl.fbaipublicfiles.com/vjepa2/vith.pt |
+| ViT-g | `vjepa2_vit_giant` | `pretrained_models/jepa/vitg.pt` | https://dl.fbaipublicfiles.com/vjepa2/vitg.pt |
+| ViT-g-384 | `vjepa2_vit_giant_384` | `pretrained_models/jepa/vitg-384.pt` | https://dl.fbaipublicfiles.com/vjepa2/vitg-384.pt |
+
+Example for ViT-H:
+
+```bash
+mkdir -p pretrained_models/jepa
+wget https://dl.fbaipublicfiles.com/vjepa2/vith.pt -O pretrained_models/jepa/vith.pt
+```
+
+### 5.3 Verify a checkpoint
+
+```bash
+python - <<'PY'
+import os, torch
+from unified_video_action.model.common.jepa_teacher import JEPATeacher
+
+ckpt = "pretrained_models/jepa/vitl.pt"
+assert os.path.isfile(ckpt), f"Missing {ckpt}"
+print("File size (GB):", os.path.getsize(ckpt) / 1e9)
+
+teacher = JEPATeacher(
+    model_name="vjepa2_vit_large",
+    img_size=256,
+    checkpoint_path=ckpt,
+    loader="torch_hub",
+)
+x = torch.rand(1, 3, 2, 256, 256)
+y = teacher.extract_tokens(x)
+print("JEPA teacher OK, tokens:", tuple(y.shape))  # e.g. (1, 2, 256, 1024)
+PY
+```
+
+To switch JEPA size, update both `model.policy.jepa_teacher_params.model_name` and `checkpoint_path` in the config (or via Hydra overrides).
+
+---
+
+## 6. Training
+
+Training uses [Hydra](https://hydra.cc/) configs under `unified_video_action/config/` and [Accelerate](https://huggingface.co/docs/accelerate) for multi-GPU launch.
+
+### 6.1 Stage 0 — Video model (required warm-start source)
+
+Train the autoregressive video model on Libero10. Output is written to `checkpoints/libero10_video/`.
+
+```bash
+sh scripts/training/train_uva_libero10.sh
+```
+
+After training, point policy stages at your best checkpoint, e.g. copy or symlink:
+
+```bash
+cp checkpoints/libero10_video/checkpoints/epoch=XXXX-test_mean_score=X.XXX.ckpt \
+   checkpoints/libero10_video.ckpt
+```
+
+Policy configs default to `training.warm_start_checkpoint: checkpoints/libero10_video.ckpt`.
+
+### 6.2 Warm-start vs resume
+
+| Option | Meaning |
+|--------|---------|
+| `training.warm_start_checkpoint=...` | Load model weights only; **epoch counter starts at 0**; optimizer state is reset |
+| `training.resume=true` | Full resume from a prior run directory (epoch, optimizer, etc.) |
+
+Policy training with a frozen teacher typically uses **warm-start**, not resume:
+
+```bash
+training.warm_start_checkpoint="checkpoints/libero10_video.ckpt" \
+training.resume=false
+```
+
+### 6.3 Stage 1 — Policy + VAE teacher (baseline)
+
+Train action policy with student tokenizer aligned to the frozen VAE teacher:
+
+```bash
 accelerate launch --num_processes=8 train.py \
-    --config-dir=. \
-    --config-name=uva_pusht.yaml \
-    model.policy.action_model_params.predict_action=False \
-    model.policy.selected_training_mode=video_model \
-    model.policy.optimizer.learning_rate=1e-4 \
-    logging.project=uva \
-    hydra.run.dir="checkpoints/uva_pusht_video_model"
+  --config-dir=unified_video_action/config \
+  --config-name=uva_libero10.yaml \
+  model.policy.use_student_tokenizer=true \
+  model.policy.teacher_type=vae \
+  model.policy.align_params.enable=true \
+  model.policy.align_params.coeff=0.05 \
+  model.policy.align_params.align_on=token_feat \
+  model.policy.action_model_params.predict_action=true \
+  model.policy.selected_training_mode=policy_model \
+  dataloader.batch_size=16 \
+  training.gradient_accumulate_every=4 \
+  training.warm_start_checkpoint="checkpoints/libero10_video.ckpt" \
+  training.resume=false \
+  hydra.run.dir="checkpoints/uva_libero10_vae_policy"
 ```
 
-#### Train Joint Video and Action Model
-To train the UVA model on the joint video and action tasks, we set `predict_action=True` and remove `selected_training_mode=video_model`.
+Adjust `align_on` to `latent` if you prefer latent-space alignment.
 
-To train the UVA model on the UMI multi-task dataset, run the following command:
-```
-accelerate launch --num_processes=8 train.py \
-    --config-dir=. \
-    --config-name=uva_pusht.yaml \
-    model.policy.autoregressive_model_params.pretrained_model_path=checkpoints/uva_pusht_video_model/checkpoints/latest.ckpt \
-    model.policy.action_model_params.predict_action=True
-    model.policy.optimizer.learning_rate=1e-4 \
-    logging.project=uva \
-    hydra.run.dir="uva_pusht_video_act_model"
+### 6.4 Stage 2 — Policy + DINOv2 teacher
+
+```bash
+sh scripts/training/train_uva_libero10_dinov2_policy.sh
 ```
 
+Or explicitly:
 
-
-## Real Robot Experiments
-
-**Be careful when conducting real robot experiments. The robot moves quickly and can be dangerous.**
-
-### Testing
-
-Download the pretrained checkpoints from the following links and put them in the `checkpoints/` folder. 
-This checkpoint is trained on **500** samples from each of the three datasets: Cup, Towel, and Mouse.
-
-* Checkpoint trained on [UMI Multitask](https://drive.google.com/file/d/1rUWtpXReULf8h42P80Go7GeTiZs3irFS/view?usp=sharing) 
-
-#### ARX X5 Robot Setup
-
-Please follow the instructions in [arx5-sdk](https://github.com/real-stanford/arx5-sdk) to setup the ARX X5 robot controller. Other models of robot arms could be used by modifying the arguments when running the controller. 
-
-To setup the UMI-related hardware (Camera, Gripper, etc.), please refer to the codebase of [UMI-on-Legs](https://github.com/real-stanford/umi-on-legs) and check out the [3d printing](https://github.com/real-stanford/umi-on-legs/blob/main/real-wbc/docs/3d_printing.md) and [assembly](https://github.com/real-stanford/umi-on-legs/blob/main/real-wbc/docs/assembly.md) instructions. 
-
-#### UVA Deployment
-
-We recommend first deploying the [umi-arx](https://github.com/real-stanford/umi-arx) codebase to test the hardware setup. For UVA deployment, please checkout the `uva` branch for some updates with more safety checks. 
-
-Instead of running the `detached_policy_inference.py` in the `UMI` codebase, please run `sh scripts/eval/eval_real.sh` to serve the UVA model. You can modify the parameters in the `eval_real.sh` for different checkpoints and tcp ports. The rest of the deployment process is the same as the original `UMI` codebase. 
-
-### Training
-
-#### Train Video Generation Model
-To train the video generation model on the UMI multi-task dataset, run the following command:
-
-```
-accelerate launch --num_processes=8 train.py \
-    --config-dir=. \
-    --config-name=uva_umi_multi.yaml \
-    model.policy.action_model_params.predict_action=False \
-    model.policy.selected_training_mode=video_model \
-    model.policy.different_history_freq=True \
-    model.policy.optimizer.learning_rate=1e-4 \
-    task.dataset.dataset_root_dir=${dataset_path} \
-    logging.project=uva \
-    hydra.run.dir="checkpoints/uva_umi_multitask_video"
+```bash
+accelerate launch --num_processes=6 train.py \
+  --config-dir=unified_video_action/config \
+  --config-name=uva_libero10_dinov2_policy.yaml \
+  training.warm_start_checkpoint="checkpoints/libero10_video.ckpt" \
+  training.resume=false \
+  logging.project=uva-repa-dino \
+  hydra.run.dir="checkpoints/uva_libero10_dino_latent_try1"
 ```
 
-For all real-world experiments, we set `different_history_freq=True` to use distinct history frequencies during training. Since the control frequency on real robot may differ from the data frequency in the collected dataset, using different history frequencies helps the model perform better during testing.
+Config: `unified_video_action/config/uva_libero10_dinov2_policy.yaml`  
+(`teacher_type: dinov2`, `align_on: latent`)
 
+Optional video-only stage with DINOv2 alignment (before policy):
 
-#### Train Joint Video and Action Model
-
-To train the UVA model on the UMI multi-task dataset, run the following command:
-```
-accelerate launch --num_processes=8 train.py \
-    --config-dir=. \
-    --config-name=uva_umi_multi.yaml \
-    model.policy.autoregressive_model_params.pretrained_model_path=checkpoints/uva_umi_multitask_video/checkpoints/latest.ckpt \
-    model.policy.action_model_params.predict_action=True \
-    model.policy.use_proprioception=True \
-    model.policy.predict_proprioception=True \
-    model.policy.shift_action=False \
-    model.policy.different_history_freq=True \
-    model.policy.optimizer.learning_rate=1e-4 \
-    task.dataset.dataset_root_dir=${dataset_path} \
-    task.dataset.used_episode_indices_file=${indices_file} \
-    logging.project=uva \
-    hydra.run.dir="uva_umi_multitask_video_action"
+```bash
+sh scripts/training/train_uva_libero10_dinov2.sh
 ```
 
+### 6.5 Stage 3 — Policy + JEPA teacher
 
+**Run once per machine before multi-GPU training:**
 
-## Dataset
-All datasets are publicly available except for `PushT-M`. We extend the `PushT` task by incorporating various target “T” positions and have collected a new dataset containing 247 demonstrations. Download the datasets and put them in the `data` folder.
+```bash
+sh scripts/setup_jepa_teacher.sh
+```
 
-### Simulation Datasets
-* [PushT](https://diffusion-policy.cs.columbia.edu/data/training/pusht.zip) from [Diffusion Policy](https://github.com/real-stanford/diffusion_policy).
-* [PushT-M](https://drive.google.com/file/d/14VqUC_LL411o9F_qdjVZlgiRBjZknw01/view?usp=sharing) from us. Download the file, extract its contents, and place them in the `data` folder.
-* [Libero10](https://utexas.box.com/shared/static/cv73j8zschq8auh9npzt876fdc1akvmk.zip) from [LIBERO](https://libero-project.github.io/main.html). We replayed the data to extract the absolute actions and appended language tokens from [CLIP](https://openai.com/index/clip/) using `AutoTokenizer.from_pretrained("openai/clip-vit-base-patch32")`. Download both the original [hdf5 file](https://drive.google.com/file/d/1_6Kc7e-s30MblbX8YjpxSofe9ZRPk3xv/view?usp=sharing) and the converted [dataset](https://drive.google.com/file/d/1cPU2RVAvtukyapcWly8zP1y-dlOEF2ko/view?usp=sharing). Then, extract their contents and place them in the `data` folder.
-* [Toolhang](https://diffusion-policy.cs.columbia.edu/data/training/robomimic_image.zip) from [Diffusion Policy](https://github.com/real-stanford/diffusion_policy). We use the file `ph/image_abs.hdf5`. Place it in the `data/tool_hang/ph/image_abs.hdf5` folder.
+Then:
 
-### Real-World Datasets
-* [UMI CUP Arrangement](https://real.stanford.edu/umi/data/cup_in_the_wild/cup_in_the_wild.zarr.zip) from [UMI](https://github.com/real-stanford/universal_manipulation_interface).
-* [UMI Towel Folding](https://huggingface.co/datasets/Fanqi-Lin/Processed-Task-Dataset/resolve/main/fold_towel/dataset.zarr.zip?download=true) from [Data Scaling Laws in Imitation Learning for Robotic Manipulation](https://github.com/Fanqi-Lin/Data-Scaling-Laws).
-* [UMI Mouse Arrangement](https://huggingface.co/datasets/Fanqi-Lin/Processed-Task-Dataset/resolve/main/arrange_mouse/dataset.zarr.zip?download=true) from [Data Scaling Laws in Imitation Learning for Robotic Manipulation](https://github.com/Fanqi-Lin/Data-Scaling-Laws).
-* [More UMI Datasets](https://umi-data.github.io/) for large-scale training. Please run `process_dataset/download_dataset.py` to download and process the datasets.
+```bash
+sh scripts/training/train_uva_libero10_jepa_policy.sh
+```
 
+Or explicitly:
 
-#### UMI Multi-Task Dataset Processing
+```bash
+accelerate launch --num_processes=3 train.py \
+  --config-dir=unified_video_action/config \
+  --config-name=uva_libero10_jepa_policy.yaml \
+  training.warm_start_checkpoint="checkpoints/libero10_video.ckpt" \
+  training.resume=false \
+  logging.project=uva-repa-jepa \
+  hydra.run.dir="checkpoints/uva_libero10_jepa_latent_try1"
+```
 
-We modified the `UMI` dataloader to support multiple UMI datasets. We also optimized the memory usage and data loading speed especially when running on a SLURM system for large scale training. 
+Config: `unified_video_action/config/uva_libero10_jepa_policy.yaml`  
+(`teacher_type: jepa`, `align_on: latent`, default model `vjepa2_vit_large`)
 
-The pipeline of processing the dataset is as follows, see `process_dataset/download_dataset.py` for more details:
+**JEPA ViT-H example** (after downloading `vith.pt`):
 
-1. Download the dataset (`.zarr.zip` format) from the corresponding urls. You can comment out the lines you don't need.
-2. Copy the dataset into shared memory (`/dev/shm`) and decompress it to a `.zarr` folder. The script is processing all the selected datasets in parallel, thus please make sure the server has enough available memory (at least 500GB). If not, you can run the `process_dataset` function (in `download_dataset.py`) inside a `for` loop.
-3. Compress the dataset using `lz4` for faster compression and decompression speed. Then copy the `.zarr.tar.lz4` files back to your `data_dir`.
+```bash
+accelerate launch --num_processes=3 train.py \
+  --config-dir=unified_video_action/config \
+  --config-name=uva_libero10_jepa_policy.yaml \
+  model.policy.jepa_teacher_params.model_name=vjepa2_vit_huge \
+  model.policy.jepa_teacher_params.checkpoint_path=pretrained_models/jepa/vith.pt \
+  training.warm_start_checkpoint="checkpoints/libero10_video.ckpt" \
+  training.resume=false \
+  hydra.run.dir="checkpoints/uva_libero10_jepa_vith_try1"
+```
 
-During training, you can run `process_dataset/extract_umi_data.py` to extract multiple datasets into your shared memory `/dev/shm` or a local disk in a SLURM system. When loading data batches, the dataloader `unified_video_action/dataset/umi_multi_dataset.py` will randomly choose a UMI dataset and fetch the data from the shared memory in a "lazy" manner, i.e. only copy the data into program memory when needed and release it afterwards. Therefore during training, there will not be duplicated data in memory even if you are training on multiple GPUs. 
+Change `--num_processes` to match available GPUs on your node.
 
-Note that we do not use mirrors in the deployment setup. Therefore, we mask out all the mirror regions in the dataset whose gripper has mirror. You can modify the `mask_mirror` option in `umi_multi.yaml` to specify individually for each dataset.
+### 6.6 Evaluation
 
-For multi-node training, please refer to `scripts/training/train_uva_umi_multi_node.sh` if you are using SLURM.
+```bash
+CUDA_VISIBLE_DEVICES=0 python eval_sim.py \
+  --checkpoint checkpoints/uva_libero10_jepa_latent_try1/checkpoints/latest.ckpt \
+  --output_dir checkpoints/uva_libero10_jepa_latent_try1/eval
+```
 
+See `scripts/eval/eval_sim.sh` for additional examples.
 
+---
 
-## 🩹 Add Your Own Task
-To add your own task, you need to implement a dataset, an environment runner, and a task configuration file. For guidance, please refer to the following examples from existing tasks:
-* `unified_video_action/config/task/umi_multi.yaml`
-* `unified_video_action/dataset/umi_multi_dataset.py`
+## 7. Weights & Biases (W&B)
 
+Training logs to W&B when `logging.mode: online` (default in policy configs). On first run you will be prompted for an API key:
 
-Make sure that `shape_meta` correspond to input and output shapes for your task. Make sure `env_runner._target_` and `dataset._target_` point to the new classes you have added. When training, add `task=<your_task_name>` to `train.py`'s arguments.
+1. Create an account at https://wandb.ai
+2. Copy your API key from https://wandb.ai/authorize
+3. Paste it when prompted (or set `WANDB_API_KEY` in the environment)
 
-## 🩹 Add Your Own Model
-To add your own model, you need to implement a configuration file, a workspace, and a policy file. For guidance, please refer to the following examples from existing models:
-* `unified_video_action/config/model/uva.yaml`
-* `unified_video_action/workspace/train_unified_video_action_workspace.py`
-* `unified_video_action/policy/unified_video_action_policy.py`
+Override project/name via Hydra, e.g. `logging.project=uva-repa-jepa`.
 
+To disable W&B: `logging.mode=offline` or `logging.mode=disabled`.
 
-## 🙋 Questions & Answers
-**Are there any tips for training UVA?**
+---
 
-We found that two-stage training works better than training on both video and action tasks simultaneously. In the first stage, the model is trained on video generation, and in the second stage, it is fine-tuned on both video and action tasks.
+## 8. Tips for long-running jobs
 
-**How long does it take to train UVA?**
+### Background sessions with GNU Screen
 
-Training time depends on both the size of the dataset and the complexity of the task. For the UMI task, we sampled 500 trajectories from each of the three datasets and trained the model using 8 H100 GPUs. The video generation task was trained for 2 days, while the joint video and action generation requires an additional 2 days.
+If you disconnect from SSH, use a terminal multiplexer so training keeps running:
 
-**What's the next step for UVA?**
+```bash
+wget https://ftp.gnu.org/gnu/screen/screen-4.9.1.tar.gz
+tar -xzf screen-4.9.1.tar.gz
+cd screen-4.9.1
+./configure --prefix=$HOME/.local
+make -j4 && make install
+echo 'export PATH=$HOME/.local/bin:$PATH' >> ~/.bashrc
+source ~/.bashrc
 
-We believe there is still significant potential in UVA that remains unexplored, and we leave this for future work.
+screen -S uva_train
+# run your training command inside the screen session
+# detach: Ctrl+A then D
+# reattach: screen -r uva_train
+```
 
-Additional video data: UVA can leverage large amounts of actionless video data, which could provide valuable additional supervision. We plan to pretrain UVA on additional video data in the future.
+Alternatives: `tmux`, `nohup`, or your cluster's job scheduler (Slurm, etc.).
 
-Multi-modality: UVA can be naturally extended to predict modalities beyond video and action, such as sound and force, by incorporating additional diffusion heads, offering a more comprehensive and versatile framework.
+### Multi-node / shared filesystem
 
-Better architecture: The model architecture can be futuer improved by replacing the diffusion heads with flow matching.
+- JEPA checkpoints must be present on **each compute node**, not only the login node.
+- torch.hub downloads V-JEPA **architecture code** once; weights are loaded from your local `checkpoint_path`.
+- If multiple processes race on first hub download, the code uses a file lock — still prefer running `setup_jepa_teacher.sh` once before launching many GPUs.
 
-Larger model size: UVA's performance may currently be limited by the model size. We plan to explore larger models in the future.
+---
 
+## 9. Architecture summary
 
-## 🏷️ License
-This repository is provided under the MIT license. For more details, please refer to [LICENSE](LICENSE).
+```
+Observations ──► StudentLatentTokenizer ──► latent [16×16×16] ──► MAR (video + action)
+                         │                         ▲
+                         └── token_feat [384]        │
+                                                     │
+              Frozen teacher (VAE / DINOv2 / JEPA) ──┘ alignment loss
+```
 
+- **MAR** and **VAE decode** still use the original 16-dim VAE latent space.
+- **Teachers** are frozen; only the student tokenizer (and policy heads) receive alignment gradients.
+- **JEPA** alignment is on student **latent** by default; a learned projector maps JEPA tokens (1024-d) to 16-d before the loss.
 
+Key files:
 
-## 🙏 Acknowledgement
-* Lots of code are inherited from [Diffusion Policy](https://github.com/real-stanford/diffusion_policy) and [MAR](https://github.com/LTH14/mar).
-* For real-world UMI experiments, we use the public datasets collected by [UMI](https://github.com/real-stanford/universal_manipulation_interface) and [Data Scaling Laws in Imitation Learning for Robotic Manipulation](https://github.com/Fanqi-Lin/Data-Scaling-Laws).
+- `unified_video_action/policy/unified_video_action_policy.py` — teacher switching, alignment
+- `unified_video_action/model/common/jepa_teacher.py` — V-JEPA 2 wrapper
+- `unified_video_action/model/common/dinov2_teacher.py` — DINOv2 wrapper
+- `unified_video_action/workspace/train_unified_video_action_workspace.py` — `warm_start_checkpoint` logic
+
+---
+
+## 10. Troubleshooting
+
+| Issue | Fix |
+|-------|-----|
+| `JEPA checkpoint not found` | Run `sh scripts/setup_jepa_teacher.sh` on that machine |
+| `Missing horizon in shape_meta` | Use configs on this branch (`task/libero10.yaml` includes `horizon`) |
+| DINOv2 hub errors on Python 3.9 | DINOv2 uses `timm` loader (`loader: timm` in config) |
+| MuJoCo / GL errors | Check `MUJOCO_PY_MUJOCO_PATH`, `LD_LIBRARY_PATH`, and `libGL.so` symlink |
+| Hydra struct / missing keys | Policy configs use inline `model.policy.*` overrides; keep `_self_` last in `defaults` |
+
+---
+
+## License
+
+See the upstream UVA repository license. Third-party weights (VAE, MAR, DINOv2, V-JEPA 2) are subject to their respective terms.
