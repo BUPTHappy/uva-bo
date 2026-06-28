@@ -19,15 +19,14 @@ This branch (`uva-repa-dinov2`) extends [UVA](https://github.com/...) with a **s
 3. Create the conda environment (`repa_environment.yml`)
 4. Install MuJoCo + LIBERO dependencies
 5. Download Libero10 data and clone LIBERO
-6. (Optional) Download V-JEPA 2 checkpoints for JEPA teacher experiments
-7. Train the video stage, then warm-start policy training with your chosen teacher
+6. Download `checkpoints/libero10_video.ckpt` and start policy training
 
 ---
 
 ## 1. Clone the repository
 
 ```bash
-git clone <your-repo-url> uva-bo
+git clone https://github.com/BUPTHappy/uva-bo.git
 cd uva-bo
 git checkout uva-repa-dinov2
 ```
@@ -42,8 +41,6 @@ This saves:
 
 - `pretrained_models/vae/kl16.ckpt`
 - `pretrained_models/mar/mar_base/checkpoint-last.pth`
-
-Optional: uncomment calls in `download.py` to also fetch MAR-L, MAR-H, or cache DINOv2 via timm.
 
 ---
 
@@ -81,7 +78,6 @@ Install MuJoCo 2.1 (adjust `$HOME` if needed):
 mkdir -p ~/.mujoco && cd ~/.mujoco
 wget https://mujoco.org/download/mujoco210-linux-x86_64.tar.gz
 tar -xzf mujoco210-linux-x86_64.tar.gz
-cd -
 ```
 
 Set environment variables (add these to `~/.bashrc` for persistence):
@@ -198,42 +194,16 @@ To switch JEPA size, update both `model.policy.jepa_teacher_params.model_name` a
 
 ## 6. Training
 
-Training uses [Hydra](https://hydra.cc/) configs under `unified_video_action/config/` and [Accelerate](https://huggingface.co/docs/accelerate) for multi-GPU launch.
-
-### 6.1 Stage 0 — Video model (required warm-start source)
-
-Train the autoregressive video model on Libero10. Output is written to `checkpoints/libero10_video/`.
+Policy training warm-starts from a pretrained Libero10 video checkpoint. Download it first (no need to train the video model yourself):
 
 ```bash
-sh scripts/training/train_uva_libero10.sh
+mkdir -p checkpoints
+gdown 1XxWHwUDehiEh1eGscyVBafLU_3V3nqxw -O checkpoints/libero10_video.ckpt
 ```
 
-After training, point policy stages at your best checkpoint, e.g. copy or symlink:
+Then pick a teacher and run the matching script. Adjust `--num_processes` inside each script to match your GPU count.
 
-```bash
-cp checkpoints/libero10_video/checkpoints/epoch=XXXX-test_mean_score=X.XXX.ckpt \
-   checkpoints/libero10_video.ckpt
-```
-
-Policy configs default to `training.warm_start_checkpoint: checkpoints/libero10_video.ckpt`.
-
-### 6.2 Warm-start vs resume
-
-| Option | Meaning |
-|--------|---------|
-| `training.warm_start_checkpoint=...` | Load model weights only; **epoch counter starts at 0**; optimizer state is reset |
-| `training.resume=true` | Full resume from a prior run directory (epoch, optimizer, etc.) |
-
-Policy training with a frozen teacher typically uses **warm-start**, not resume:
-
-```bash
-training.warm_start_checkpoint="checkpoints/libero10_video.ckpt" \
-training.resume=false
-```
-
-### 6.3 Stage 1 — Policy + VAE teacher (baseline)
-
-Train action policy with student tokenizer aligned to the frozen VAE teacher:
+**VAE teacher**
 
 ```bash
 accelerate launch --num_processes=8 train.py \
@@ -243,75 +213,30 @@ accelerate launch --num_processes=8 train.py \
   model.policy.teacher_type=vae \
   model.policy.align_params.enable=true \
   model.policy.align_params.coeff=0.05 \
-  model.policy.align_params.align_on=token_feat \
   model.policy.action_model_params.predict_action=true \
   model.policy.selected_training_mode=policy_model \
   dataloader.batch_size=16 \
   training.gradient_accumulate_every=4 \
-  training.warm_start_checkpoint="checkpoints/libero10_video.ckpt" \
+  training.warm_start_checkpoint=checkpoints/libero10_video.ckpt \
   training.resume=false \
-  hydra.run.dir="checkpoints/uva_libero10_vae_policy"
+  hydra.run.dir=checkpoints/uva_libero10_vae_policy
 ```
 
-Adjust `align_on` to `latent` if you prefer latent-space alignment.
-
-### 6.4 Stage 2 — Policy + DINOv2 teacher
+**DINOv2 teacher**
 
 ```bash
 sh scripts/training/train_uva_libero10_dinov2_policy.sh
 ```
 
-Or explicitly:
-
-```bash
-accelerate launch --num_processes=6 train.py \
-  --config-dir=unified_video_action/config \
-  --config-name=uva_libero10_dinov2_policy.yaml \
-  training.warm_start_checkpoint="checkpoints/libero10_video.ckpt" \
-  training.resume=false \
-  logging.project=uva-repa-dino \
-  hydra.run.dir="checkpoints/uva_libero10_dino_latent_try1"
-```
-
-Config: `unified_video_action/config/uva_libero10_dinov2_policy.yaml`  
-(`teacher_type: dinov2`, `align_on: latent`)
-
-Optional video-only stage with DINOv2 alignment (before policy):
-
-```bash
-sh scripts/training/train_uva_libero10_dinov2.sh
-```
-
-### 6.5 Stage 3 — Policy + JEPA teacher
-
-**Run once per machine before multi-GPU training:**
-
-```bash
-sh scripts/setup_jepa_teacher.sh
-```
-
-Then:
+**JEPA teacher** (run `setup_jepa_teacher.sh` once per machine first — see Section 5)
 
 ```bash
 sh scripts/training/train_uva_libero10_jepa_policy.sh
 ```
 
-Or explicitly:
+By default this uses **ViT-L** (`vjepa2_vit_large` + `pretrained_models/jepa/vitl.pt`), as set in `unified_video_action/config/uva_libero10_jepa_policy.yaml`. Downloading other sizes does not change which teacher runs — only `model_name` and `checkpoint_path` in the config matter.
 
-```bash
-accelerate launch --num_processes=3 train.py \
-  --config-dir=unified_video_action/config \
-  --config-name=uva_libero10_jepa_policy.yaml \
-  training.warm_start_checkpoint="checkpoints/libero10_video.ckpt" \
-  training.resume=false \
-  logging.project=uva-repa-jepa \
-  hydra.run.dir="checkpoints/uva_libero10_jepa_latent_try1"
-```
-
-Config: `unified_video_action/config/uva_libero10_jepa_policy.yaml`  
-(`teacher_type: jepa`, `align_on: latent`, default model `vjepa2_vit_large`)
-
-**JEPA ViT-H example** (after downloading `vith.pt`):
+To use a different size, override both on the command line, e.g. ViT-H:
 
 ```bash
 accelerate launch --num_processes=3 train.py \
@@ -319,22 +244,15 @@ accelerate launch --num_processes=3 train.py \
   --config-name=uva_libero10_jepa_policy.yaml \
   model.policy.jepa_teacher_params.model_name=vjepa2_vit_huge \
   model.policy.jepa_teacher_params.checkpoint_path=pretrained_models/jepa/vith.pt \
-  training.warm_start_checkpoint="checkpoints/libero10_video.ckpt" \
-  training.resume=false \
-  hydra.run.dir="checkpoints/uva_libero10_jepa_vith_try1"
+  hydra.run.dir=checkpoints/uva_libero10_jepa_vith_try1
 ```
 
-Change `--num_processes` to match available GPUs on your node.
-
-### 6.6 Evaluation
-
-```bash
-CUDA_VISIBLE_DEVICES=0 python eval_sim.py \
-  --checkpoint checkpoints/uva_libero10_jepa_latent_try1/checkpoints/latest.ckpt \
-  --output_dir checkpoints/uva_libero10_jepa_latent_try1/eval
-```
-
-See `scripts/eval/eval_sim.sh` for additional examples.
+| Size | `model_name` | `checkpoint_path` |
+|------|--------------|-------------------|
+| ViT-L (default) | `vjepa2_vit_large` | `pretrained_models/jepa/vitl.pt` |
+| ViT-H | `vjepa2_vit_huge` | `pretrained_models/jepa/vith.pt` |
+| ViT-g | `vjepa2_vit_giant` | `pretrained_models/jepa/vitg.pt` |
+| ViT-g-384 | `vjepa2_vit_giant_384` | `pretrained_models/jepa/vitg-384.pt` |
 
 ---
 
@@ -382,42 +300,3 @@ Alternatives: `tmux`, `nohup`, or your cluster's job scheduler (Slurm, etc.).
 - If multiple processes race on first hub download, the code uses a file lock — still prefer running `setup_jepa_teacher.sh` once before launching many GPUs.
 
 ---
-
-## 9. Architecture summary
-
-```
-Observations ──► StudentLatentTokenizer ──► latent [16×16×16] ──► MAR (video + action)
-                         │                         ▲
-                         └── token_feat [384]        │
-                                                     │
-              Frozen teacher (VAE / DINOv2 / JEPA) ──┘ alignment loss
-```
-
-- **MAR** and **VAE decode** still use the original 16-dim VAE latent space.
-- **Teachers** are frozen; only the student tokenizer (and policy heads) receive alignment gradients.
-- **JEPA** alignment is on student **latent** by default; a learned projector maps JEPA tokens (1024-d) to 16-d before the loss.
-
-Key files:
-
-- `unified_video_action/policy/unified_video_action_policy.py` — teacher switching, alignment
-- `unified_video_action/model/common/jepa_teacher.py` — V-JEPA 2 wrapper
-- `unified_video_action/model/common/dinov2_teacher.py` — DINOv2 wrapper
-- `unified_video_action/workspace/train_unified_video_action_workspace.py` — `warm_start_checkpoint` logic
-
----
-
-## 10. Troubleshooting
-
-| Issue | Fix |
-|-------|-----|
-| `JEPA checkpoint not found` | Run `sh scripts/setup_jepa_teacher.sh` on that machine |
-| `Missing horizon in shape_meta` | Use configs on this branch (`task/libero10.yaml` includes `horizon`) |
-| DINOv2 hub errors on Python 3.9 | DINOv2 uses `timm` loader (`loader: timm` in config) |
-| MuJoCo / GL errors | Check `MUJOCO_PY_MUJOCO_PATH`, `LD_LIBRARY_PATH`, and `libGL.so` symlink |
-| Hydra struct / missing keys | Policy configs use inline `model.policy.*` overrides; keep `_self_` last in `defaults` |
-
----
-
-## License
-
-See the upstream UVA repository license. Third-party weights (VAE, MAR, DINOv2, V-JEPA 2) are subject to their respective terms.
