@@ -293,10 +293,5 @@ screen -S uva_train
 
 Alternatives: `tmux`, `nohup`, or your cluster's job scheduler (Slurm, etc.).
 
-### Multi-node / shared filesystem
-
-- JEPA checkpoints must be present on **each compute node**, not only the login node.
-- torch.hub downloads V-JEPA **architecture code** once; weights are loaded from your local `checkpoint_path`.
-- If multiple processes race on first hub download, the code uses a file lock — still prefer running `setup_jepa_teacher.sh` once before launching many GPUs.
 
 ---
